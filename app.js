@@ -24,7 +24,7 @@
   const NAV = [
     {id:"dashboard",label:"Dashboard",icon:"▦",subtitle:"Academic performance overview"},
     {id:"my_class",label:"My Class",icon:"▣",subtitle:"Assigned class, learners, and report progress",roles:["class_teacher"]},
-    {id:"my_subjects",label:"My Subjects",icon:"⌘",subtitle:"Assigned subjects, classes, and assessment progress",roles:["subject_teacher"]},
+    {id:"my_subjects",label:"My Subjects",icon:"⌘",subtitle:"Assigned subjects, classes, and assessment progress",roles:["class_teacher","subject_teacher"]},
     {id:"students",label:"Students",icon:"◉",subtitle:"Student records and enrolment",roles:["system_admin","class_teacher","subject_teacher"]},
     {id:"teachers",label:"Teachers",icon:"♜",subtitle:"Teacher records and assignments",permission:"manage_teachers"},
     {id:"headteachers",label:"Principals",icon:"★",subtitle:"Principal records and appointments",permission:"manage_headteachers"},
@@ -40,7 +40,7 @@
   const ROLE_NAV_IDS = Object.freeze({
     system_admin:["dashboard","students","teachers","headteachers","academics","reports","users","notifications","audit","settings"],
     principal:["dashboard","reports","notifications"],
-    class_teacher:["dashboard","my_class","students","reports","notifications"],
+    class_teacher:["dashboard","my_class","my_subjects","students","reports","notifications"],
     subject_teacher:["dashboard","my_subjects","students","reports","notifications"],
     parent_guardian:["dashboard","children","notifications"]
   });
@@ -52,7 +52,7 @@
     academicTab:"periods", notifications:[], mfaFactorId:null, mfaEnrollment:null,
     teacherAdmin:null, headteacherAdmin:null, userAdmin:null, userAccessRows:[], assignmentClassSelections:new Set(), assignmentSubjectSelections:new Set(),
     userAccessClassSelections:new Set(), userAccessSubjectSelections:new Set(), userAccessAllSubjects:false, guardianAccounts:[], autoComments:null,
-    passwordChangeRequired:false,
+    passwordChangeRequired:false, userAccessEditingUserId:"",
     workspace:null, studentClassFilter:"", reportClassFilter:"",
     initialized:false, realtimeConnected:0, lastSync:null, pending:0, conflicts:0
   };
@@ -588,7 +588,7 @@
     const configs={
       system_admin:{title:"System Administration Dashboard",subtitle:"Users, records, security, and report operations",cards:[["blue","♟","Active Users",metrics.active_users],["gold","♜","Active Teachers",metrics.active_teachers],["green","◉","Active Students",metrics.active_students],["purple","▤","Report Cards",reports]]},
       principal:{title:"Principal Dashboard",subtitle:"School performance, approvals, and publication",cards:[["blue","◉","Active Students",metrics.active_students],["gold","⌛","Awaiting Action",metrics.pending_review],["green","✓","Published Reports",published],["purple","%","Published Average",number(metrics.average,1)+"%"]]},
-      class_teacher:{title:"Class Teacher Dashboard",subtitle:"Assigned learners, reports, and class progress",cards:[["blue","▣","Assigned Classes",metrics.assigned_classes],["gold","◉","Visible Students",metrics.active_students],["green","✎","Draft or Returned",metrics.draft_returned],["purple","⌛","In Review",metrics.pending_review]]},
+      class_teacher:{title:"Class and Subject Teacher Dashboard",subtitle:"Home-class responsibilities and subject teaching assignments",cards:[["blue","▣","Assigned Classes",metrics.assigned_classes],["gold","⌘","Assigned Subjects",metrics.assigned_subjects],["green","◉","Visible Students",metrics.active_students],["purple","✎","Draft or Returned",metrics.draft_returned]]},
       subject_teacher:{title:"Subject Teacher Dashboard",subtitle:"Assigned subjects and assessment workload",cards:[["blue","⌘","Assigned Subjects",metrics.assigned_subjects],["gold","▣","Assigned Classes",metrics.assigned_classes],["green","✎","Open Reports",metrics.draft_returned],["purple","%","Published Average",number(metrics.average,1)+"%"]]},
       parent_guardian:{title:"Parent and Guardian Dashboard",subtitle:"Linked children and published academic records",cards:[["blue","♥","My Children",metrics.children],["gold","✓","Published Reports",published],["green","◆","Unread Notifications",metrics.unread_notifications],["purple","%","Average",number(metrics.average,1)+"%"]]}
     };
@@ -657,7 +657,10 @@
   }
   function dashboardQuickActions(currentRole) {
     const actions=[];
-    if(currentRole==="class_teacher")actions.push(`<button class="button secondary" data-dashboard-view="my_class">My Class</button>`);
+    if(currentRole==="class_teacher"){
+      actions.push(`<button class="button secondary" data-dashboard-view="my_class">My Class</button>`);
+      actions.push(`<button class="button secondary" data-dashboard-view="my_subjects">My Subjects</button>`);
+    }
     if(currentRole==="subject_teacher")actions.push(`<button class="button secondary" data-dashboard-view="my_subjects">My Subjects</button>`);
     if(can("manage_students"))actions.push(`<button class="button secondary" data-dashboard-view="students">Students</button>`);
     if(can("manage_teachers"))actions.push(`<button class="button secondary" data-dashboard-view="teachers">Teachers</button>`);
@@ -1158,7 +1161,11 @@
       <section class="panel"><div class="panel-header"><div><h3>Classes</h3><p>${classes.length} configured</p></div><button class="button primary small" id="addClass">Add class</button></div>
         <div class="table-wrap"><table><thead><tr><th>Class</th><th>Level</th><th>Class Teacher</th><th></th></tr></thead><tbody>
           ${classes.map(row=>`<tr><td><strong>${esc(row.name)}</strong></td><td>${number(row.level_order)}</td>
-            <td>${esc((state.academic.profiles||[]).find(p=>p.id===row.class_teacher_id)?.full_name||"—")}</td>
+            <td>${esc(
+              (state.academic.teacher_records||[]).find(t=>t.id===row.class_teacher_record_id)?.full_name
+              ||(state.academic.profiles||[]).find(p=>p.id===row.class_teacher_id)?.full_name
+              ||"—"
+            )}</td>
             <td><div class="table-actions"><button class="button ghost small" data-edit-class="${row.id}">Edit</button><button class="button danger small" data-remove-class="${row.id}">Remove</button></div></td></tr>`).join("")}
         </tbody></table></div></section>
       <section class="panel"><div class="panel-header"><div><h3>Subjects</h3><p>${subjects.length} configured</p></div><button class="button primary small" id="addSubject">Add subject</button></div>
@@ -1310,11 +1317,16 @@
   }
   function openClassEditor(id=null) {
     const row=(state.academic.classes||[]).find(x=>x.id===id)||{};
-    const classTeacherProfiles=(state.academic.profiles||[]).filter(profile=>profile.role==="class_teacher");
+    const teacherRecords=(state.academic.teacher_records||[]).filter(teacher=>teacher.active!==false);
+    const selectedTeacherRecordId=row.class_teacher_record_id
+      ||teacherRecords.find(teacher=>teacher.profile_id&&teacher.profile_id===row.class_teacher_id)?.id
+      ||"";
     modal(id?"Edit Class":"Add Class","",`<form id="entityForm" class="form-grid">
       <label class="field"><span>Name</span><input name="name" value="${attr(row.name||"")}" required></label>
       <label class="field"><span>Level order</span><input type="number" name="level_order" value="${attr(row.level_order||0)}"></label>
-      <label class="field full"><span>Class teacher</span><select name="class_teacher_id">${optionList(classTeacherProfiles,"id","full_name",row.class_teacher_id,"Unassigned")}</select></label>
+      <label class="field full"><span>Class teacher</span><select name="class_teacher_record_id">${optionList(teacherRecords,"id","label",selectedTeacherRecordId,"Unassigned")}</select>
+        <small class="help-text">All active teacher records are listed. A teacher without a linked account can be assigned now; portal access begins after the account is linked.</small>
+      </label>
       <label class="check-field full"><input type="checkbox" name="active" ${row.active!==false?"checked":""}><span>Active class</span></label>
     </form>`,`<button class="button ghost" id="entityCancel" type="button">Cancel</button><button class="button primary" id="entitySave" type="button">Save</button>`,"small");
     byId("entityCancel").onclick=closeModal;byId("entitySave").onclick=()=>saveEntity("classes",id);
@@ -1345,7 +1357,7 @@
     try {
       const numeric=["sequence","level_order","display_order"];
       numeric.forEach(key=>{if(key in values)values[key]=Number(values[key]||0)});
-      ["start_date","end_date","next_term_begins","class_teacher_id"].forEach(key=>{if(key in values&&!values[key])values[key]=null});
+      ["start_date","end_date","next_term_begins","class_teacher_id","class_teacher_record_id"].forEach(key=>{if(key in values&&!values[key])values[key]=null});
       if("active" in form.elements)values.active=form.elements.active.checked;
       await rpc("save_academic_entity",{entity_type:table,payload:{...values,id:id||null,reason:id?"Academic record updated":"Academic record created"}});
       saved=true;state.workspace=null;closeModal();toast("Academic record saved");
@@ -1430,6 +1442,7 @@
         <div id="assignmentSubjectDropdown"></div>
       </div>
       <p class="help-text" id="assignmentCombinationSummary"></p>
+      <p class="help-text">For different subject groups, save one group first, then use Assign more for the next class range.</p>
       <label class="check-field"><input type="checkbox" name="active" ${row.active!==false?"checked":""}><span>Active assignments</span></label>
     </form>`,`<button class="button ghost" id="entityCancel" type="button">Cancel</button><button class="button primary" id="entitySave" type="button">Save assignments</button>`,"wide");
     renderAssignmentVerticalSelectors();
@@ -2322,9 +2335,10 @@
     const user=id?(state.userAdmin.profiles||[]).find(x=>x.id===id):{role:"parent_guardian",active:true,mfa_required:false,must_change_password:false,access:[]};if(!user)return;
     const initialEmail=id?(user.email||generatedNipEmail(user.full_name||"")):generatedNipEmail(user.full_name||"");
     state.userAccessRows=(user.access||[]).map(x=>({...x}));
-    state.userAccessClassSelections=new Set(state.userAccessRows.map(row=>row.class_id).filter(Boolean));
-    state.userAccessSubjectSelections=new Set(state.userAccessRows.map(row=>row.subject_id).filter(Boolean));
-    state.userAccessAllSubjects=state.userAccessRows.some(row=>!row.subject_id);
+    state.userAccessEditingUserId=id||"";
+    state.userAccessClassSelections=new Set();
+    state.userAccessSubjectSelections=new Set();
+    state.userAccessAllSubjects=false;
     modal(id?"Edit User Account":"Create User Account",user.email||"",`<form id="userForm" class="form-stack">
       <div class="form-grid">
         <label class="field full hidden" id="userStaffField"><span id="userStaffLabel">Staff record</span><select id="userStaffSelect" name="staff_record_id"></select></label>
@@ -2339,7 +2353,7 @@
         <label class="check-field"><input name="mfa_required" type="checkbox" ${user.mfa_required?"checked":""}><span>Require multi-factor authentication</span></label>
         <label class="check-field full"><input name="must_change_password" type="checkbox" ${user.must_change_password?"checked":""}><span>Force password change on next login</span></label>
       </div>
-      <div id="userAccessSection"><div class="section-title"><div><h4>Delegated Class Access</h4><p class="help-text">Select one or more classes, then select the subjects available in the teacher portal.</p></div></div><div id="userAccessRows"></div></div>
+      <div id="userAccessSection"><div class="section-title"><div><h4>Teaching Responsibilities</h4><p class="help-text">Class Teacher and subject-teaching access is synchronised from Academics.</p></div></div><div id="userAccessRows"></div></div>
     </form>`,`<button class="button ghost" id="userCancel" type="button">Cancel</button><button class="button primary" id="userSave" type="button">${id?"Save account":"Create account"}</button>`,"wide");
     renderUserAccessRows();
     renderUserStaffSelector(id||"",user.headteacher_id||user.teacher_id||"");
@@ -2348,17 +2362,9 @@
     if(!id)scheduleGeneratedUserEmail(null);
     byId("generateUserPassword").onclick=()=>{const password=generateSecurePassword();byId("adminUserPassword").value=password;byId("adminUserPassword").type="text"};
     byId("userRoleSelect").onchange=()=>{
-      const selected=byId("userRoleSelect").value;
-      if(!["class_teacher","subject_teacher"].includes(selected)){
-        state.userAccessClassSelections.clear();
-        state.userAccessSubjectSelections.clear();
-        state.userAccessAllSubjects=false;
-      }else if(selected==="subject_teacher"&&state.userAccessAllSubjects){
-        state.userAccessAllSubjects=false;
-        state.userAccessSubjectSelections.clear();
-      }
       syncUserAccessRowsFromSelections();
-      renderUserAccessRows();renderUserStaffSelector(id||"","");
+      renderUserAccessRows();
+      renderUserStaffSelector(id||"","");
     };
     byId("userCancel").onclick=closeModal;
     byId("userSave").onclick=()=>saveUserAccount(id);
@@ -2398,21 +2404,26 @@
   }
   function userAccessKey(classId,subjectId){return `${classId}|${subjectId||"*"}`}
 
+  function teacherResponsibilityAccessRows(userId=state.userAccessEditingUserId) {
+    if(!userId)return [];
+    const rows=[],seen=new Set();
+    (state.userAdmin?.classes||[]).filter(item=>
+      item.active!==false&&!item.deleted_at&&item.class_teacher_id===userId
+    ).forEach(item=>{
+      const key=userAccessKey(item.id,null);
+      if(!seen.has(key)){seen.add(key);rows.push({class_id:item.id,subject_id:null,access_level:"edit"})}
+    });
+    (state.userAdmin?.class_subjects||[]).filter(item=>
+      item.active!==false&&item.teacher_id===userId&&item.class_id&&item.subject_id
+    ).forEach(item=>{
+      const key=userAccessKey(item.class_id,item.subject_id);
+      if(!seen.has(key)){seen.add(key);rows.push({class_id:item.class_id,subject_id:item.subject_id,access_level:"score"})}
+    });
+    return rows;
+  }
+
   function syncUserAccessRowsFromSelections() {
-    const roleName=byId("userRoleSelect")?.value||"parent_guardian";
-    if(!["class_teacher","subject_teacher"].includes(roleName)){
-      state.userAccessRows=[];
-      return;
-    }
-    const classIds=[...state.userAccessClassSelections];
-    if(roleName==="class_teacher"&&state.userAccessAllSubjects){
-      state.userAccessRows=classIds.map(class_id=>({class_id,subject_id:null,access_level:"edit"}));
-      return;
-    }
-    const subjectIds=[...state.userAccessSubjectSelections];
-    state.userAccessRows=classIds.flatMap(class_id=>subjectIds.map(subject_id=>({
-      class_id,subject_id,access_level:"score"
-    })));
+    state.userAccessRows=teacherResponsibilityAccessRows();
   }
 
   function renderUserAccessRows() {
@@ -2422,65 +2433,53 @@
     if(section)section.classList.toggle("hidden",!teacherRole);
     if(!teacherRole){state.userAccessRows=[];root.innerHTML="";return}
 
-    const classes=(state.userAdmin.classes||[]).filter(item=>item.active!==false);
-    const subjects=(state.userAdmin.subjects||[]).filter(item=>item.active!==false);
-    root.innerHTML=`<div class="independent-check-grid">
-      <div id="userClassDropdown"></div>
-      <div id="userSubjectDropdown"></div>
-    </div>
-    <label class="check-field full ${roleName==="class_teacher"?"":"hidden"}" id="userAllSubjectsRow">
-      <input type="checkbox" id="userAllSubjects" ${state.userAccessAllSubjects?"checked":""}>
-      <span>All subjects in the selected classes</span>
-    </label>
-    <p class="help-text" id="userAccessSummary"></p>`;
-
-    renderVerticalChecklistDropdown({
-      rootId:"userClassDropdown",
-      label:"Class",
-      items:classes,
-      selected:state.userAccessClassSelections,
-      emptyLabel:"Select class",
-      onChange:()=>{
-        syncUserAccessRowsFromSelections();
-        renderUserAccessRows();
-      }
-    });
-    renderVerticalChecklistDropdown({
-      rootId:"userSubjectDropdown",
-      label:"Subject",
-      items:subjects,
-      selected:state.userAccessSubjectSelections,
-      emptyLabel:state.userAccessAllSubjects?"All subjects":"Select subject",
-      allLabel:roleName==="subject_teacher"?"All subjects":"",
-      showCode:true,
-      onChange:()=>{
-        if(roleName==="class_teacher")state.userAccessAllSubjects=false;
-        syncUserAccessRowsFromSelections();
-        renderUserAccessRows();
-      }
-    });
-
-    const allSubjects=byId("userAllSubjects");
-    if(allSubjects)allSubjects.onchange=()=>{
-      state.userAccessAllSubjects=allSubjects.checked;
-      if(allSubjects.checked)state.userAccessSubjectSelections.clear();
-      syncUserAccessRowsFromSelections();
-      renderUserAccessRows();
-    };
-
-    const summary=byId("userAccessSummary");
-    if(summary){
-      if(!state.userAccessClassSelections.size){
-        summary.textContent="Select one or more classes.";
-      }else if(roleName==="class_teacher"&&state.userAccessAllSubjects){
-        summary.textContent=`Whole-class access will be granted to ${state.userAccessClassSelections.size} class${state.userAccessClassSelections.size===1?"":"es"}.`;
-      }else if(!state.userAccessSubjectSelections.size){
-        summary.textContent="Select one or more subjects.";
-      }else{
-        const count=state.userAccessClassSelections.size*state.userAccessSubjectSelections.size;
-        summary.textContent=`${count} delegated class-subject access record${count===1?"":"s"} will be saved.`;
-      }
+    const userId=state.userAccessEditingUserId;
+    if(!userId){
+      root.innerHTML=`<div class="responsibility-empty">
+        <strong>Create the teacher account first</strong>
+        <span>After the account is created, assign the home class and exact subjects under Academics.</span>
+      </div>`;
+      state.userAccessRows=[];
+      return;
     }
+
+    const classes=state.userAdmin?.classes||[];
+    const subjects=state.userAdmin?.subjects||[];
+    const classById=new Map(classes.map(item=>[item.id,item]));
+    const subjectById=new Map(subjects.map(item=>[item.id,item]));
+    const homeClasses=classes.filter(item=>
+      item.active!==false&&!item.deleted_at&&item.class_teacher_id===userId
+    );
+    const exactAssignments=(state.userAdmin?.class_subjects||[]).filter(item=>
+      item.active!==false&&item.teacher_id===userId&&item.class_id&&item.subject_id
+    );
+    const grouped=new Map();
+    exactAssignments.forEach(item=>{
+      const classItem=classById.get(item.class_id);
+      const subjectItem=subjectById.get(item.subject_id);
+      if(!classItem||!subjectItem)return;
+      if(!grouped.has(item.class_id))grouped.set(item.class_id,{class_name:classItem.name,subjects:[]});
+      grouped.get(item.class_id).subjects.push(subjectItem.name);
+    });
+    state.userAccessRows=teacherResponsibilityAccessRows(userId);
+
+    root.innerHTML=`<div class="teaching-responsibility-summary">
+      <article><span>Class Teacher Responsibility</span><strong>${homeClasses.length?homeClasses.map(item=>esc(item.name)).join(", "):"Not assigned"}</strong><small>${homeClasses.length?"Full class-report responsibility":"Assign a home class under Academics → Classes"}</small></article>
+      <article><span>Subject Teaching Responsibility</span><strong>${exactAssignments.length} exact assignment${exactAssignments.length===1?"":"s"}</strong><small>${grouped.size} class${grouped.size===1?"":"es"} • ${new Set(exactAssignments.map(item=>item.subject_id)).size} subject${new Set(exactAssignments.map(item=>item.subject_id)).size===1?"":"s"}</small></article>
+    </div>
+    <div class="responsibility-groups">
+      ${grouped.size?[...grouped.values()].map(group=>`<div class="responsibility-group">
+        <strong>${esc(group.class_name)}</strong>
+        <span>${group.subjects.sort((a,b)=>a.localeCompare(b)).map(name=>esc(name)).join(", ")}</span>
+      </div>`).join(""):`<div class="responsibility-empty"><strong>No subject assignments</strong><span>Use Assign Subjects under Academics to add exact class-subject responsibilities.</span></div>`}
+    </div>
+    <div class="button-row"><button class="button secondary small" id="manageTeachingResponsibilities" type="button">Manage in Academics</button></div>`;
+
+    byId("manageTeachingResponsibilities").onclick=()=>{
+      closeModal();
+      state.academicTab="classes";
+      navigate("academics");
+    };
   }
   async function invokeAdminUserManagement(action,payload) {
     let {data:{session}}=await state.client.auth.getSession();
@@ -2506,9 +2505,6 @@
       if(!userId&&String(v.password||"").length<8)throw new Error("Password must contain at least 8 characters");
       if(userId&&v.password&&String(v.password).length<8)throw new Error("Password must contain at least 8 characters");
       if(["principal","class_teacher","subject_teacher"].includes(v.role)&&!v.staff_record_id)throw new Error("Select the corresponding staff record");
-      if(["class_teacher","subject_teacher"].includes(v.role)&&!state.userAccessClassSelections.size)throw new Error("Select at least one delegated class");
-      if(v.role==="subject_teacher"&&!state.userAccessSubjectSelections.size)throw new Error("Select at least one delegated subject");
-      if(v.role==="class_teacher"&&!state.userAccessAllSubjects&&!state.userAccessSubjectSelections.size)throw new Error("Select delegated subjects or choose all subjects");
       syncUserAccessRowsFromSelections();
       const payload={user_id:userId||undefined,full_name:v.full_name.trim(),email:v.email.trim(),phone:v.phone.trim(),role:v.role,staff_record_id:v.staff_record_id||"",
         password:v.password||"",active:form.elements.active.checked,mfa_required:form.elements.mfa_required.checked,
