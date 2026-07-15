@@ -1016,7 +1016,7 @@
         <div class="table-wrap"><table><thead><tr><th>Class</th><th>Subject</th><th>Teacher</th><th>Status</th><th></th></tr></thead><tbody>
           ${assignments.map(row=>`<tr><td>${esc(row.class_name)}</td><td>${esc(row.subject_name)}</td><td>${esc(row.teacher_name||"—")}</td>
             <td>${row.active?`<span class="status published">Active</span>`:`<span class="status withdrawn">Inactive</span>`}</td>
-            <td><div class="table-actions"><button class="button ghost small" data-edit-assignment="${row.id}">Edit</button>${row.active?`<button class="button danger small" data-remove-assignment="${row.id}">Remove</button>`:""}</div></td></tr>`).join("")}
+            <td><div class="table-actions"><button class="button ghost small" data-edit-assignment="${row.id}">Edit</button>${row.active?`<button class="button danger small" data-remove-assignment="${row.id}">Remove</button>`:`<button class="button danger small" data-delete-assignment="${row.id}">Delete</button>`}</div></td></tr>`).join("")}
         </tbody></table></div></section>
     </div>`;
   }
@@ -1090,6 +1090,7 @@
     byId("addAssignment")?.addEventListener("click",()=>openAssignmentEditor());
     $$("[data-edit-assignment]").forEach(b=>b.onclick=()=>openAssignmentEditor(b.dataset.editAssignment));
     $$("[data-remove-assignment]").forEach(b=>b.onclick=()=>removeAcademicEntity("assignment",b.dataset.removeAssignment));
+    $$("[data-delete-assignment]").forEach(b=>b.onclick=()=>deleteClassSubjectAssignment(b.dataset.deleteAssignment));
     byId("addScheme")?.addEventListener("click",()=>openSchemeEditor());
     $$("[data-edit-scheme]").forEach(b=>b.onclick=()=>openSchemeEditor(b.dataset.editScheme));
     byId("addGrade")?.addEventListener("click",()=>openGradeEditor());
@@ -1106,6 +1107,17 @@
       await rpc("archive_academic_entity",{entity_type:type,target_id:id,reason_text:`${labels[type]||"Academic record"} removed`});
       toast(`${labels[type]||"Academic record"} removed`);await refreshAcademic();
     }catch(error){toast("Record not removed",friendlyError(error),"error",6500)}
+  }
+
+  async function deleteClassSubjectAssignment(id) {
+    const row=(state.academic?.class_subjects||[]).find(item=>item.id===id);if(!row)return;
+    const label=[row.class_name,row.subject_name].filter(Boolean).join(" • ")||"this assignment";
+    const ok=await confirmAction("Delete Subject Assignment",`Permanently delete ${label}? This cannot be undone.`,"Delete",true);
+    if(!ok)return;
+    try{
+      await rpc("delete_class_subject_assignment",{target_id:id,reason_text:"Class subject assignment permanently deleted"});
+      toast("Subject assignment deleted");await refreshAcademic();
+    }catch(error){toast("Assignment not deleted",friendlyError(error),"error",6500)}
   }
 
   async function refreshAcademic() {
@@ -2039,14 +2051,41 @@
     $$("[data-user-edit]",root).forEach(button=>button.onclick=()=>openUserEditor(button.dataset.userEdit));
     $$("[data-user-delete]",root).forEach(button=>button.onclick=()=>deleteUserAccount(button.dataset.userDelete));
   }
+  const NIP_EMAIL_TITLES=new Set(["mr","mrs","ms","miss","madam","master","dr","doctor","rev","reverend","prof","professor","principal","headmaster","headmistress"]);
+  let userEmailPreviewTimer=0,userEmailPreviewToken=0;
+  function nipEmailBase(fullNameValue) {
+    const parts=String(fullNameValue||"").normalize("NFKD").replace(/[\u0300-\u036f]/g,"").toLowerCase().split(/\s+/)
+      .map(part=>part.replace(/[^a-z0-9]/g,"")).filter(Boolean);
+    return parts.find(part=>!NIP_EMAIL_TITLES.has(part))||parts[0]||"";
+  }
+  function generatedNipEmail(fullNameValue) {
+    const base=nipEmailBase(fullNameValue);return base?`${base}@nip.com`:"";
+  }
+  async function refreshGeneratedUserEmail(userId=null) {
+    const form=byId("userForm"),input=form?.elements?.email;if(!form||!input||userId)return;
+    const base=nipEmailBase(form.elements.full_name.value),fallback=base?`${base}@nip.com`:"";
+    input.value=fallback;
+    if(!base||!state.boot?.profile?.id)return;
+    const token=++userEmailPreviewToken;
+    try{
+      const resolved=await rpc("generate_nip_user_email",{actor_id:state.boot.profile.id,requested_base:base,target_user_id:null});
+      if(token===userEmailPreviewToken&&byId("userForm")===form)input.value=String(resolved||fallback);
+    }catch(_){/* The protected Edge Function performs the authoritative generation. */}
+  }
+  function scheduleGeneratedUserEmail(userId=null) {
+    clearTimeout(userEmailPreviewTimer);
+    userEmailPreviewTimer=setTimeout(()=>refreshGeneratedUserEmail(userId),220);
+  }
+
   function openUserEditor(id=null) {
     const user=id?(state.userAdmin.profiles||[]).find(x=>x.id===id):{role:"parent_guardian",active:true,mfa_required:false,access:[]};if(!user)return;
+    const initialEmail=id?(user.email||generatedNipEmail(user.full_name||"")):generatedNipEmail(user.full_name||"");
     state.userAccessRows=(user.access||[]).map(x=>({...x}));
     modal(id?"Edit User Account":"Create User Account",user.email||"",`<form id="userForm" class="form-stack">
       <div class="form-grid">
         <label class="field full hidden" id="userStaffField"><span id="userStaffLabel">Staff record</span><select id="userStaffSelect" name="staff_record_id"></select></label>
         <label class="field"><span>Full name</span><input name="full_name" value="${attr(user.full_name||"")}" required></label>
-        <label class="field"><span>Email address</span><input name="email" type="email" value="${attr(user.email||"")}" required></label>
+        <label class="field"><span>Email address</span><input name="email" type="email" value="${attr(initialEmail)}" readonly required></label>
         <label class="field"><span>Telephone</span><input name="phone" value="${attr(user.phone||"")}"></label>
         <label class="field"><span>Role</span><select id="userRoleSelect" name="role">
           ${["system_admin","principal","class_teacher","subject_teacher","parent_guardian"].map(r=>`<option value="${r}" ${r===user.role?"selected":""}>${esc(ROLE_LABELS[r])}</option>`).join("")}
@@ -2059,6 +2098,9 @@
     </form>`,`<button class="button ghost" id="userCancel" type="button">Cancel</button><button class="button primary" id="userSave" type="button">${id?"Save account":"Create account"}</button>`,"wide");
     renderUserAccessRows();
     renderUserStaffSelector(id||"",user.headteacher_id||user.teacher_id||"");
+    const userForm=byId("userForm");
+    userForm.elements.full_name.addEventListener("input",()=>scheduleGeneratedUserEmail(id));
+    if(!id)scheduleGeneratedUserEmail(null);
     byId("generateUserPassword").onclick=()=>{const password=generateSecurePassword();byId("adminUserPassword").value=password;byId("adminUserPassword").type="text"};
     byId("userRoleSelect").onchange=()=>{
       const selected=byId("userRoleSelect").value;
@@ -2089,7 +2131,7 @@
       const record=rows.find(item=>item.id===select.value);if(!record)return;
       const form=byId("userForm");if(!form)return;
       form.elements.full_name.value=record.full_name||"";
-      if(record.email)form.elements.email.value=record.email;
+      if(!userId)scheduleGeneratedUserEmail(null);
       if(record.phone)form.elements.phone.value=record.phone;
     };
   }
