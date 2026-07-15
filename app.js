@@ -9,47 +9,45 @@
     photoBucket: "student-photos",
     pdfBucket: "report-pdfs",
     backupBucket: "system-backups",
+    signatureBucket: "headteacher-signatures",
     pageSize: 20
   });
 
   const ROLE_LABELS = {
-    system_admin: "System Administrator", headteacher: "Headteacher",
-    academic_admin: "Academic Administrator", class_teacher: "Class Teacher",
-    subject_teacher: "Subject Teacher", records_officer: "Records Officer",
-    viewer: "Viewer", parent_guardian: "Parent or Guardian",
-    admin: "System Administrator", teacher: "Class Teacher"
+    system_admin: "System Administrator",
+    principal: "Principal (Headmaster/Headmistress)",
+    class_teacher: "Class Teacher",
+    subject_teacher: "Subject Teacher",
+    parent_guardian: "Parent or Guardian"
   };
 
   const NAV = [
     {id:"dashboard",label:"Dashboard",icon:"▦",subtitle:"Academic performance overview"},
     {id:"my_class",label:"My Class",icon:"▣",subtitle:"Assigned class, learners, and report progress",roles:["class_teacher"]},
     {id:"my_subjects",label:"My Subjects",icon:"⌘",subtitle:"Assigned subjects, classes, and assessment progress",roles:["subject_teacher"]},
-    {id:"students",label:"Students",icon:"◉",subtitle:"Student records and enrolment",hideFor:["parent_guardian"]},
+    {id:"students",label:"Students",icon:"◉",subtitle:"Student records and enrolment",roles:["system_admin","class_teacher","subject_teacher"]},
     {id:"teachers",label:"Teachers",icon:"♜",subtitle:"Teacher records and assignments",permission:"manage_teachers"},
-    {id:"headteachers",label:"Headteachers",icon:"★",subtitle:"Headteacher records and appointments",permission:"manage_headteachers"},
+    {id:"headteachers",label:"Principals",icon:"★",subtitle:"Principal records and appointments",permission:"manage_headteachers"},
     {id:"academics",label:"Academics",icon:"⌘",subtitle:"Academic structure and assessment",permission:"manage_academics"},
     {id:"reports",label:"Report Cards",icon:"▤",subtitle:"Assessment, approval, and publication",hideFor:["parent_guardian"]},
     {id:"children",label:"My Children",icon:"♥",subtitle:"Published academic records",roles:["parent_guardian"]},
     {id:"users",label:"Users and Access",icon:"♟",subtitle:"Roles, classes, and security",permission:"manage_users"},
     {id:"notifications",label:"Notifications",icon:"◆",subtitle:"School and workflow alerts"},
     {id:"audit",label:"Audit Trail",icon:"◎",subtitle:"Record changes and accountability",permission:"view_audit"},
-    {id:"settings",label:"Settings",icon:"⚙",subtitle:"School identity, security, and resilience",roles:["system_admin","headteacher","academic_admin"]}
+    {id:"settings",label:"Settings",icon:"⚙",subtitle:"School identity, security, and resilience",roles:["system_admin"]}
   ];
 
   const ROLE_NAV_IDS = Object.freeze({
     system_admin:["dashboard","students","teachers","headteachers","academics","reports","users","notifications","audit","settings"],
-    headteacher:["dashboard","students","teachers","academics","reports","notifications","audit","settings"],
-    academic_admin:["dashboard","students","teachers","academics","reports","notifications","audit","settings"],
+    principal:["dashboard","reports","notifications"],
     class_teacher:["dashboard","my_class","students","reports","notifications"],
     subject_teacher:["dashboard","my_subjects","students","reports","notifications"],
-    records_officer:["dashboard","students","teachers","reports","notifications"],
-    viewer:["dashboard","students","reports","notifications"],
     parent_guardian:["dashboard","children","notifications"]
   });
 
   const state = {
     client:null, session:null, boot:null, view:"dashboard", viewToken:0,
-    channels:[], photoUrls:new Map(), pdfUrls:new Map(), online:navigator.onLine,
+    channels:[], photoUrls:new Map(), pdfUrls:new Map(), signatureUrls:new Map(), online:navigator.onLine,
     studentPage:1, teacherPage:1, headteacherPage:1, reportPage:1, currentStudent:null, reportEditor:null,
     academicTab:"periods", notifications:[], mfaFactorId:null, mfaEnrollment:null,
     teacherAdmin:null, headteacherAdmin:null, userAdmin:null, userAccessRows:[], guardianAccounts:[], autoComments:null,
@@ -72,7 +70,7 @@
   const fullName = row => [row?.first_name,row?.middle_name,row?.last_name].filter(Boolean).join(" ");
   const activeYear = () => state.boot?.academic_years?.find(x=>x.is_active) || null;
   const activeTerm = () => state.boot?.terms?.find(x=>x.is_active) || null;
-  const role = () => state.boot?.profile?.role || "viewer";
+  const role = () => state.boot?.profile?.role || "";
   const can = key => Boolean(state.boot?.permissions?.[key]);
   const isConfigured = () => /^https:\/\/.+\.supabase\.co$/i.test(CONFIG.supabaseUrl) && !CONFIG.supabaseAnonKey.startsWith("YOUR_");
 
@@ -275,7 +273,7 @@
   async function signedUrl(bucket,path,seconds=900) {
     if(!path) return "";
     if(/^https?:\/\//i.test(path)||path.startsWith("data:")||path.startsWith("assets/")) return path;
-    const cache=bucket===CONFIG.photoBucket?state.photoUrls:state.pdfUrls;
+    const cache=bucket===CONFIG.photoBucket?state.photoUrls:bucket===CONFIG.signatureBucket?state.signatureUrls:state.pdfUrls;
     const cached=cache.get(path);
     if(cached&&cached.expires>Date.now()) return cached.url;
     const {data,error}=await state.client.storage.from(bucket).createSignedUrl(path,seconds);
@@ -451,7 +449,7 @@
     const token=state.viewToken;
     try {
       const renderer={
-        dashboard:renderDashboard,my_class:renderMyClass,my_subjects:renderMySubjects,students:renderStudents,teachers:renderTeachers,headteachers:renderHeadteachers,academics:renderAcademics,reports:renderReports,
+        dashboard:renderDashboard,my_class:renderMyClass,my_subjects:renderMySubjects,students:renderStudents,teachers:renderTeachers,headteachers:renderPrincipals,academics:renderAcademics,reports:renderReports,
         children:renderChildren,users:renderUsers,notifications:renderNotifications,audit:renderAudit,settings:renderSettings
       }[view];
       await renderer?.(token,force);
@@ -498,7 +496,7 @@
       if(state.view==="dashboard") renderDashboard(state.viewToken,true);
       else if(state.view==="students"&&(table==="students"||table==="enrollments"||topic.startsWith("student:"))) renderStudents(state.viewToken,true);
       else if(state.view==="teachers"&&(table==="teachers"||table==="profiles"||table==="classes"||table==="class_subjects"||topic==="school:global")) renderTeachers(state.viewToken,true);
-      else if(state.view==="headteachers"&&(table==="headteachers"||table==="profiles"||topic==="school:global")) renderHeadteachers(state.viewToken,true);
+      else if(state.view==="headteachers"&&(table==="headteachers"||table==="profiles"||topic==="school:global")) renderPrincipals(state.viewToken,true);
       else if(state.view==="users"&&(table==="profiles"||table==="user_class_access"||table==="teachers"||table==="headteachers"||topic==="school:global")) renderUsers(state.viewToken,true);
       else if(state.view==="reports"||state.view==="children") {
         if(state.reportEditor&&topic===`report:${state.reportEditor.report?.id}`) refreshOpenReport();
@@ -528,21 +526,21 @@
     const metrics=await rpc("get_role_dashboard",{target_term_id:term?.id||null});
     if(token!==state.viewToken)return;
     const currentRole=role(),statuses=metrics.by_status||{},reports=Number(metrics.reports||0),published=Number(metrics.published||0);
+    const signatureRecord=currentRole==="principal"?await rpc("get_my_headteacher_signature").catch(error=>({linked:false,error:friendlyError(error)})):null;
+    if(token!==state.viewToken)return;
     const completion=reports?Math.round(published/reports*100):0;
     const configs={
       system_admin:{title:"System Administration Dashboard",subtitle:"Users, records, security, and report operations",cards:[["blue","♟","Active Users",metrics.active_users],["gold","♜","Active Teachers",metrics.active_teachers],["green","◉","Active Students",metrics.active_students],["purple","▤","Report Cards",reports]]},
-      headteacher:{title:"Headteacher Dashboard",subtitle:"School performance, approvals, and publication",cards:[["blue","◉","Active Students",metrics.active_students],["gold","⌛","Awaiting Action",metrics.pending_review],["green","✓","Published Reports",published],["purple","%","Published Average",number(metrics.average,1)+"%"]]},
-      academic_admin:{title:"Academic Administration Dashboard",subtitle:"Classes, assessment progress, and report completion",cards:[["blue","▣","Active Classes",metrics.active_classes],["gold","⌘","Assigned Subjects",metrics.assigned_subjects],["green","▤","Term Reports",reports],["purple","⌛","Pending Review",metrics.pending_review]]},
+      principal:{title:"Principal Dashboard",subtitle:"School performance, approvals, and publication",cards:[["blue","◉","Active Students",metrics.active_students],["gold","⌛","Awaiting Action",metrics.pending_review],["green","✓","Published Reports",published],["purple","%","Published Average",number(metrics.average,1)+"%"]]},
       class_teacher:{title:"Class Teacher Dashboard",subtitle:"Assigned learners, reports, and class progress",cards:[["blue","▣","Assigned Classes",metrics.assigned_classes],["gold","◉","Visible Students",metrics.active_students],["green","✎","Draft or Returned",metrics.draft_returned],["purple","⌛","In Review",metrics.pending_review]]},
       subject_teacher:{title:"Subject Teacher Dashboard",subtitle:"Assigned subjects and assessment workload",cards:[["blue","⌘","Assigned Subjects",metrics.assigned_subjects],["gold","▣","Assigned Classes",metrics.assigned_classes],["green","✎","Open Reports",metrics.draft_returned],["purple","%","Published Average",number(metrics.average,1)+"%"]]},
-      records_officer:{title:"Records Office Dashboard",subtitle:"Student registration and record completeness",cards:[["blue","◉","Active Students",metrics.active_students],["gold","▣","Active Classes",metrics.active_classes],["green","♥","Missing Guardians",metrics.missing_guardians],["purple","▧","Missing Photos",metrics.missing_photos]]},
-      viewer:{title:"Academic Records Dashboard",subtitle:"Authorised read-only performance overview",cards:[["blue","◉","Visible Students",metrics.active_students],["gold","▤","Report Cards",reports],["green","✓","Published",published],["purple","%","Completion",completion+"%"]]},
       parent_guardian:{title:"Parent and Guardian Dashboard",subtitle:"Linked children and published academic records",cards:[["blue","♥","My Children",metrics.children],["gold","✓","Published Reports",published],["green","◆","Unread Notifications",metrics.unread_notifications],["purple","%","Average",number(metrics.average,1)+"%"]]}
     };
-    const cfg=configs[currentRole]||configs.viewer;
+    const cfg=configs[currentRole]||configs.parent_guardian;
     byId("content").innerHTML=`
       <div class="page-head"><div><h3>${esc(cfg.title)}</h3><p>${esc(cfg.subtitle)}</p></div><div class="page-actions">${dashboardQuickActions(currentRole)}</div></div>
       <div class="stat-grid">${cfg.cards.map(card=>statCard(...card)).join("")}</div>
+      ${currentRole==="principal"?headteacherSignaturePanel(signatureRecord):""}
       <div class="grid two">
         <section class="panel"><div class="panel-header"><div><h3>Current Academic Period</h3><p>${esc(activeYear()?.name||"No active academic year")} • ${esc(term?.name||"No active term")}</p></div></div>
           <div class="panel-body"><div class="metric-row"><div class="metric"><span>Draft</span><strong>${number(statuses.draft)}</strong></div><div class="metric"><span>Submitted</span><strong>${number(statuses.submitted)}</strong></div><div class="metric"><span>Approved</span><strong>${number(statuses.approved)}</strong></div><div class="metric"><span>Completion</span><strong>${completion}%</strong></div></div><div class="progress"><span style="width:${completion}%"></span></div></div>
@@ -555,6 +553,51 @@
     $(`[data-open-reports]`)?.addEventListener("click",()=>navigate("reports"));
     $(`[data-open-children]`)?.addEventListener("click",()=>navigate("children"));
     $$(`[data-dashboard-view]`).forEach(button=>button.onclick=()=>navigate(button.dataset.dashboardView));
+    if(currentRole==="principal")await bindPrincipalSignaturePanel(signatureRecord);
+  }
+  function headteacherSignaturePanel(record) {
+    if(!record?.linked)return `<section class="panel signature-panel"><div class="panel-header"><div><h3>Digital Signature</h3><p>Principal report signing</p></div></div><div class="panel-body"><div class="empty"><strong>No linked principal record</strong><span>${esc(record?.error||"Ask the System Administrator to link this account to a principal record in Users and Access.")}</span></div></div></section>`;
+    return `<section class="panel signature-panel"><div class="panel-header"><div><h3>Digital Signature</h3><p>Uploaded signature appears on officially published student report cards</p></div><span class="status ${record.signature_path?"published":"draft"}">${record.signature_path?"Signature ready":"Not uploaded"}</span></div>
+      <div class="panel-body signature-layout"><div class="signature-preview-wrap">${record.signature_path?`<img id="headteacherSignaturePreview" alt="Principal signature">`:`<div class="signature-empty">No signature uploaded</div>`}</div>
+      <div class="form-stack"><div><strong>${esc(record.full_name||"Principal")}</strong><p class="muted">Use a clear PNG, JPEG or WebP signature. A transparent PNG gives the best result.</p></div>
+      <label class="field"><span>Signature image</span><input id="headteacherSignatureFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
+      <div class="button-row"><button class="button primary" id="headteacherSignatureUpload" type="button">Upload signature</button>${record.signature_path?`<button class="button danger" id="headteacherSignatureRemove" type="button">Remove signature</button>`:""}</div></div></div></section>`;
+  }
+  async function bindPrincipalSignaturePanel(record) {
+    if(!record?.linked)return;
+    if(record.signature_path&&byId("headteacherSignaturePreview")){
+      try{byId("headteacherSignaturePreview").src=await signedUrl(CONFIG.signatureBucket,record.signature_path,900)}catch(_){byId("headteacherSignaturePreview").replaceWith(Object.assign(document.createElement("div"),{className:"signature-empty",textContent:"Signature preview unavailable"}))}
+    }
+    byId("headteacherSignatureUpload")?.addEventListener("click",async()=>{
+      const file=byId("headteacherSignatureFile")?.files?.[0],button=byId("headteacherSignatureUpload");
+      if(!file){toast("Signature not uploaded","Select a signature image first.","error");return}
+      if(file.size>5*1024*1024){toast("Signature not uploaded","The image must be 5 MB or smaller.","error");return}
+      button.disabled=true;button.textContent="Uploading";let uploadedPath="";
+      try{
+        const blob=await prepareSignatureImage(file),path=`${state.boot.profile.id}/${Date.now()}.webp`;uploadedPath=path;
+        const {error}=await state.client.storage.from(CONFIG.signatureBucket).upload(path,blob,{contentType:"image/webp",upsert:false});if(error)throw error;
+        await rpc("set_my_headteacher_signature",{target_signature_path:path,expected_updated_at:record.updated_at||null});
+        if(record.signature_path&&record.signature_path!==path)await state.client.storage.from(CONFIG.signatureBucket).remove([record.signature_path]).catch(()=>{});
+        state.signatureUrls.clear();toast("Digital signature uploaded");await renderDashboard(state.viewToken);
+      }catch(error){if(uploadedPath)await state.client.storage.from(CONFIG.signatureBucket).remove([uploadedPath]).catch(()=>{});toast("Signature not uploaded",friendlyError(error),"error",6500)}
+      finally{button.disabled=false;button.textContent="Upload signature"}
+    });
+    byId("headteacherSignatureRemove")?.addEventListener("click",async()=>{
+      if(!await confirmAction("Remove Digital Signature","Published PDF files already generated remain unchanged. Future report cards will not show this signature.","Remove",true))return;
+      try{await rpc("set_my_headteacher_signature",{target_signature_path:"",expected_updated_at:record.updated_at||null});if(record.signature_path)await state.client.storage.from(CONFIG.signatureBucket).remove([record.signature_path]).catch(()=>{});state.signatureUrls.clear();toast("Digital signature removed");await renderDashboard(state.viewToken)}
+      catch(error){toast("Signature not removed",friendlyError(error),"error",6500)}
+    });
+  }
+  async function prepareSignatureImage(file,maxWidth=1200,maxHeight=420) {
+    const bitmap=await createImageBitmap(file),scale=Math.min(1,maxWidth/bitmap.width,maxHeight/bitmap.height);
+    const canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+    const ctx=canvas.getContext("2d",{willReadFrequently:true});ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close();
+    const image=ctx.getImageData(0,0,canvas.width,canvas.height),data=image.data;let minX=canvas.width,minY=canvas.height,maxX=-1,maxY=-1;
+    for(let y=0;y<canvas.height;y++)for(let x=0;x<canvas.width;x++){const i=(y*canvas.width+x)*4,r=data[i],g=data[i+1],b=data[i+2],brightness=(r+g+b)/3;if(brightness>248)data[i+3]=0;else if(brightness>225)data[i+3]=Math.round(data[i+3]*(248-brightness)/23);if(data[i+3]>18){minX=Math.min(minX,x);minY=Math.min(minY,y);maxX=Math.max(maxX,x);maxY=Math.max(maxY,y)}}
+    ctx.putImageData(image,0,0);if(maxX<minX||maxY<minY)throw new Error("The selected image does not contain a visible signature");
+    const pad=18,x=Math.max(0,minX-pad),y=Math.max(0,minY-pad),w=Math.min(canvas.width-x,maxX-minX+1+pad*2),h=Math.min(canvas.height-y,maxY-minY+1+pad*2);
+    const cropped=document.createElement("canvas");cropped.width=w;cropped.height=h;cropped.getContext("2d").drawImage(canvas,x,y,w,h,0,0,w,h);
+    return new Promise((resolve,reject)=>cropped.toBlob(blob=>blob?resolve(blob):reject(new Error("Signature conversion failed")),"image/webp",.92));
   }
   function dashboardQuickActions(currentRole) {
     const actions=[];
@@ -562,7 +605,7 @@
     if(currentRole==="subject_teacher")actions.push(`<button class="button secondary" data-dashboard-view="my_subjects">My Subjects</button>`);
     if(can("manage_students"))actions.push(`<button class="button secondary" data-dashboard-view="students">Students</button>`);
     if(can("manage_teachers"))actions.push(`<button class="button secondary" data-dashboard-view="teachers">Teachers</button>`);
-    if(can("manage_headteachers"))actions.push(`<button class="button secondary" data-dashboard-view="headteachers">Headteachers</button>`);
+    if(can("manage_headteachers"))actions.push(`<button class="button secondary" data-dashboard-view="headteachers">Principals</button>`);
     if(can("create_reports"))actions.push(`<button class="button primary" data-dashboard-view="reports">Report Cards</button>`);
     if(currentRole==="parent_guardian")actions.push(`<button class="button primary" data-dashboard-view="children">My Children</button>`);
     return actions.join("");
@@ -601,9 +644,8 @@
   function canRemoveReportRow(row) {
     if(!can("remove_reports")||row?.archived)return false;
     const currentRole=role(),status=String(row?.status||"draft");
-    if(["system_admin","headteacher"].includes(currentRole))return true;
-    if(currentRole==="academic_admin")return !["approved","published","withdrawn"].includes(status);
-    return currentRole==="class_teacher"&&["draft","returned"].includes(status);
+    if(currentRole==="system_admin")return true;
+    return ["class_teacher","subject_teacher"].includes(currentRole)&&["draft","returned"].includes(status);
   }
   function reportTable(rows,compact=false,manage=false) {
     if(!rows.length)return `<div class="empty"><strong>No report cards</strong><span>Records will appear here when available.</span></div>`;
@@ -668,7 +710,7 @@
         <td>${statusBadge(row.archived?"archived":row.status)}</td><td><div class="table-actions">
           <button class="button secondary small" data-student-view="${attr(row.id)}">View</button>
           ${can("manage_students")&&!row.archived?`<button class="button ghost small" data-student-edit="${attr(row.id)}">Edit</button>`:""}
-          ${row.enrollment_id&&!row.archived&&role()!=="viewer"?`<button class="button outline small" data-student-report="${attr(row.enrollment_id)}">Report</button>`:""}
+          ${row.enrollment_id&&!row.archived&&["class_teacher","subject_teacher"].includes(role())?`<button class="button outline small" data-student-report="${attr(row.enrollment_id)}">Report</button>`:""}
           ${can("remove_students")&&!row.archived?`<button class="button danger small" data-student-archive="${attr(row.id)}">Remove</button>`:""}
           ${can("remove_students")&&row.archived?`<button class="button success small" data-student-restore="${attr(row.id)}">Restore</button>`:""}
         </div></td></tr>`).join("")}</tbody></table></div>
@@ -694,7 +736,7 @@
       const page=Number(button.dataset.page);if(page<1)return;
       if(key==="student"){state.studentPage=page;loadStudentPage()}
       if(key==="teacher"){state.teacherPage=page;loadTeacherPage()}
-      if(key==="headteacher"){state.headteacherPage=page;loadHeadteacherPage()}
+      if(key==="principal"){state.headteacherPage=page;loadPrincipalPage()}
       if(key==="report"){state.reportPage=page;loadReportPage()}
     });
   }
@@ -943,7 +985,7 @@
         <div class="table-wrap"><table><thead><tr><th>Name</th><th>Dates</th><th>Status</th><th></th></tr></thead><tbody>
           ${y.map(row=>`<tr><td><strong>${esc(row.name)}</strong></td><td>${isoDate(row.start_date)} – ${isoDate(row.end_date)}</td>
             <td>${row.is_active?`<span class="status published">Active</span>`:`<span class="status draft">Inactive</span>`}</td>
-            <td><div class="table-actions"><button class="button ghost small" data-edit-year="${row.id}">Edit</button></div></td></tr>`).join("")}
+            <td><div class="table-actions"><button class="button ghost small" data-edit-year="${row.id}">Edit</button>${!row.is_active?`<button class="button danger small" data-remove-year="${row.id}">Remove</button>`:""}</div></td></tr>`).join("")}
         </tbody></table></div></section>
       <section class="panel"><div class="panel-header"><div><h3>Terms</h3><p>${terms.length} configured</p></div><button class="button primary small" id="addTerm">Add term</button></div>
         <div class="table-wrap"><table><thead><tr><th>Term</th><th>Academic Year</th><th>Status</th><th></th></tr></thead><tbody>
@@ -951,7 +993,7 @@
             <td>${esc(y.find(x=>x.id===row.academic_year_id)?.name||"")}</td>
             <td>${row.is_active?`<span class="status published">Active</span>`:`<span class="status draft">Inactive</span>`}</td>
             <td><div class="table-actions"><button class="button ghost small" data-edit-term="${row.id}">Edit</button>
-            ${!row.is_active?`<button class="button success small" data-set-active="${row.academic_year_id}|${row.id}">Activate</button>`:""}</div></td></tr>`).join("")}
+            ${!row.is_active?`<button class="button success small" data-set-active="${row.academic_year_id}|${row.id}">Activate</button><button class="button danger small" data-remove-term="${row.id}">Remove</button>`:""}</div></td></tr>`).join("")}
         </tbody></table></div></section>
     </div>`;
   }
@@ -1028,8 +1070,10 @@
   function bindAcademicTabEvents() {
     byId("addYear")?.addEventListener("click",()=>openYearEditor());
     $$("[data-edit-year]").forEach(b=>b.onclick=()=>openYearEditor(b.dataset.editYear));
+    $$("[data-remove-year]").forEach(b=>b.onclick=()=>removeAcademicEntity("academic_year",b.dataset.removeYear));
     byId("addTerm")?.addEventListener("click",()=>openTermEditor());
     $$("[data-edit-term]").forEach(b=>b.onclick=()=>openTermEditor(b.dataset.editTerm));
+    $$("[data-remove-term]").forEach(b=>b.onclick=()=>removeAcademicEntity("term",b.dataset.removeTerm));
     $$("[data-set-active]").forEach(b=>b.onclick=async()=>{
       const [yearId,termId]=b.dataset.setActive.split("|");
       if(await confirmAction("Activate Academic Period","This term will become the current reporting period.","Activate")){
@@ -1054,8 +1098,9 @@
     byId("runPromotion")?.addEventListener("click",runPromotion);
   }
   async function removeAcademicEntity(type,id) {
-    const labels={class:"Class",subject:"Subject",assignment:"Subject assignment"};
-    const ok=await confirmAction(`Remove ${labels[type]||"Record"}`,"The record will be archived while historical academic results remain preserved.","Remove",true);
+    const labels={academic_year:"Academic year",term:"Term",class:"Class",subject:"Subject",assignment:"Subject assignment"};
+    const messages={academic_year:"The academic year and its terms will be removed from current configuration. Published historical reports remain preserved.",term:"The term will be removed from current configuration. Published historical reports remain preserved."};
+    const ok=await confirmAction(`Remove ${labels[type]||"Record"}`,messages[type]||"The record will be archived while historical academic results remain preserved.","Remove",true);
     if(!ok)return;
     try{
       await rpc("archive_academic_entity",{entity_type:type,target_id:id,reason_text:`${labels[type]||"Academic record"} removed`});
@@ -1092,7 +1137,7 @@
   }
   function openClassEditor(id=null) {
     const row=(state.academic.classes||[]).find(x=>x.id===id)||{};
-    const classTeacherProfiles=(state.academic.profiles||[]).filter(profile=>["headteacher","academic_admin","class_teacher"].includes(profile.role));
+    const classTeacherProfiles=(state.academic.profiles||[]).filter(profile=>profile.role==="class_teacher");
     modal(id?"Edit Class":"Add Class","",`<form id="entityForm" class="form-grid">
       <label class="field"><span>Name</span><input name="name" value="${attr(row.name||"")}" required></label>
       <label class="field"><span>Level order</span><input type="number" name="level_order" value="${attr(row.level_order||0)}"></label>
@@ -1103,13 +1148,24 @@
   }
   function openSubjectEditor(id=null) {
     const row=(state.academic.subjects||[]).find(x=>x.id===id)||{};
-    modal(id?"Edit Subject":"Add Subject","",`<form id="entityForm" class="form-grid">
-      <label class="field"><span>Code</span><input name="code" value="${attr(row.code||"")}" required></label>
-      <label class="field"><span>Name</span><input name="name" value="${attr(row.name||"")}" required></label>
+    modal(id?"Edit Subject":"Add Subject",id?"The unique subject code remains permanent.":"The code is generated automatically from the subject name.",`<form id="entityForm" class="form-grid">
+      <label class="field"><span>Subject name</span><input name="name" value="${attr(row.name||"")}" required></label>
+      <label class="field"><span>Unique code</span><input name="code" value="${attr(row.code||"")}" placeholder="Generated automatically" readonly></label>
       <label class="field"><span>Display order</span><input type="number" name="display_order" value="${attr(row.display_order||0)}"></label>
       <label class="check-field"><input type="checkbox" name="active" ${row.active!==false?"checked":""}><span>Active subject</span></label>
     </form>`,`<button class="button ghost" id="entityCancel" type="button">Cancel</button><button class="button primary" id="entitySave" type="button">Save</button>`,"small");
+    const form=byId("entityForm"),nameInput=form.elements.name,codeInput=form.elements.code;
+    if(!id){
+      let timer;const generate=async()=>{const name=nameInput.value.trim();if(!name){codeInput.value="";return}try{codeInput.value=await rpc("generate_subject_code",{subject_name:name,exclude_subject_id:null})}catch(_){codeInput.value=""}};
+      nameInput.addEventListener("input",()=>{clearTimeout(timer);codeInput.value="";codeInput.placeholder=`${subjectCodePrefix(nameInput.value)}####`;timer=setTimeout(generate,550)});
+      nameInput.addEventListener("blur",generate);
+    }
     byId("entityCancel").onclick=closeModal;byId("entitySave").onclick=()=>saveEntity("subjects",id);
+  }
+  function subjectCodePrefix(name) {
+    const words=String(name||"").toUpperCase().replace(/[^A-Z0-9 ]/g," ").trim().split(/\s+/).filter(Boolean);
+    const meaningful=words.filter(word=>!["AND","OF","THE","FOR","IN","TO"].includes(word)),source=meaningful.length?meaningful:words;
+    if(!source.length)return "SUB";return source.length===1?source[0].slice(0,3):source.slice(0,4).map(word=>word[0]).join("");
   }
   async function saveEntity(table,id) {
     const form=byId("entityForm"),values=formObject(form),button=byId("entitySave");if(!form?.reportValidity())return;button.disabled=true;let saved=false;
@@ -1126,7 +1182,7 @@
   }
   function openAssignmentEditor(id=null) {
     const row=(state.academic.class_subjects||[]).find(x=>x.id===id)||{};
-    const subjectTeacherProfiles=(state.academic.profiles||[]).filter(profile=>["headteacher","academic_admin","class_teacher","subject_teacher"].includes(profile.role));
+    const subjectTeacherProfiles=(state.academic.profiles||[]).filter(profile=>["class_teacher","subject_teacher"].includes(profile.role));
     modal(id?"Edit Subject Assignment":"Assign Subject","",`<form id="entityForm" class="form-grid">
       <label class="field"><span>Class</span><select name="class_id" required>${optionList(state.academic.classes||[],"id","name",row.class_id)}</select></label>
       <label class="field"><span>Subject</span><select name="subject_id" required>${optionList(state.academic.subjects||[],"id","name",row.subject_id)}</select></label>
@@ -1369,7 +1425,7 @@
                 <div class="full comment-actions">${editor.can_edit_fields||canHeadComment?`<button class="button secondary small" id="reportGenerateComments" type="button">Generate comments</button>`:""}
                   ${locked&&canHeadComment?`<button class="button primary small" id="reportSaveComments" type="button">Save comments</button>`:""}</div>
                 <label class="field full"><span>Class teacher's comment</span><textarea name="teacher_comment" ${fieldsLocked?"disabled":""}>${esc(report.teacher_comment||"")}</textarea></label>
-                <label class="field full"><span>Headteacher's comment</span><textarea name="head_comment" ${canHeadComment?"":"disabled"}>${esc(report.head_comment||"")}</textarea></label>
+                <label class="field full"><span>Principal's comment</span><textarea name="head_comment" ${canHeadComment?"":"disabled"}>${esc(report.head_comment||"")}</textarea></label>
               </div>
               <div class="section-title"><h4>Subject Results</h4><span class="chip">${subjects.length} subjects</span></div>
               <div class="score-grid"><table><thead><tr><th>Subject</th><th>Assessment Components</th><th>Total</th><th>Grade</th><th>Remark</th><th>Initials</th></tr></thead>
@@ -1486,7 +1542,7 @@
   function workflowButtons(report,publication) {
     const buttons=[],allowed=new Set(state.reportEditor.allowed_transitions||[]);
     if(state.reportEditor.can_edit)buttons.push(`<button class="button primary full" id="reportSave">Save report</button>`);
-    if(allowed.has("submitted"))buttons.push(`<button class="button secondary full" data-transition="submitted">Submit for review</button>`);
+    if(allowed.has("submitted"))buttons.push(`<button class="button secondary full" data-transition="submitted">Submit for Principal approval</button>`);
     if(allowed.has("class_reviewed"))buttons.push(`<button class="button success full" data-transition="class_reviewed">Complete class review</button>`);
     if(allowed.has("approved"))buttons.push(`<button class="button success full" data-transition="approved">Approve report</button>`);
     if(allowed.has("published"))buttons.push(`<button class="button success full" data-transition="published">Publish report</button>`);
@@ -1659,6 +1715,9 @@
   async function loadImage(url) {
     return new Promise((resolve,reject)=>{const image=new Image();image.crossOrigin="anonymous";image.onload=()=>resolve(image);image.onerror=reject;image.src=url});
   }
+  function drawImageContain(ctx,image,x,y,width,height) {
+    const scale=Math.min(width/image.width,height/image.height),drawWidth=image.width*scale,drawHeight=image.height*scale;ctx.drawImage(image,x+(width-drawWidth)/2,y+(height-drawHeight)/2,drawWidth,drawHeight);
+  }
   function drawWrapped(ctx,text,x,y,maxWidth,lineHeight,maxLines=3) {
     const words=String(text||"").split(/\s+/);let line="",lines=0;
     for(const word of words){
@@ -1681,10 +1740,12 @@
   async function createReportPdf(editor,publication) {
     const canvas=document.createElement("canvas");canvas.width=1240;canvas.height=1754;
     const ctx=canvas.getContext("2d"),school=state.boot.school||{},student=editor.student||{},report=editor.report||{},subjects=editor.subjects||[];
+    const signer=report.id?await rpc("get_report_headteacher_signature",{target_report_id:report.id}).catch(()=>({})):{};
+    let signatureImage=null;if(signer.signature_path){try{signatureImage=await loadImage(await signedUrl(CONFIG.signatureBucket,signer.signature_path,600))}catch(_){signatureImage=null}}
     ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);
     ctx.fillStyle=school.primary_colour||"#082d70";ctx.fillRect(0,0,canvas.width,205);
     const logo=await loadImage(school.logo_url?.startsWith("http")?school.logo_url:CONFIG.logoPath).catch(()=>null);
-    if(logo)ctx.drawImage(logo,55,28,145,145);
+    if(logo){ctx.save();ctx.globalAlpha=.055;drawImageContain(ctx,logo,300,500,640,640);ctx.restore();ctx.drawImage(logo,55,28,145,145)};
     ctx.fillStyle="#fff";ctx.font="bold 46px Arial";ctx.fillText(school.school_name||"Nipe International School",225,75);
     ctx.font="24px Arial";ctx.fillText(school.motto||"",225,116);
     ctx.font="bold 30px Arial";ctx.fillText(school.report_title||"Student Terminal Report",225,165);
@@ -1712,14 +1773,16 @@
     ctx.fillText(position.position?`Position: ${position.position} / ${position.class_size}`:`Status: ${String(report.status||"").toUpperCase()}`,850,1198);
     ctx.font="18px Arial";ctx.fillText(`Attitude: ${report.attitude||"—"}`,75,1242);ctx.fillText(`Conduct: ${report.conduct||"—"}`,430,1242);ctx.fillText(`Interest: ${report.interest||"—"}`,850,1242);
     ctx.font="bold 17px Arial";ctx.fillText("Class Teacher's Comment",60,1360);ctx.font="17px Arial";drawWrapped(ctx,report.teacher_comment||"",60,1390,760,25,3);
-    ctx.font="bold 17px Arial";ctx.fillText("Headteacher's Comment",60,1485);ctx.font="17px Arial";drawWrapped(ctx,report.head_comment||"",60,1515,760,25,3);
+    ctx.font="bold 17px Arial";ctx.fillText("Principal's Comment",60,1485);ctx.font="17px Arial";drawWrapped(ctx,report.head_comment||"",60,1515,520,25,3);
+    if(signatureImage)drawImageContain(ctx,signatureImage,610,1480,260,105);
+    ctx.strokeStyle="#45556f";ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(610,1595);ctx.lineTo(875,1595);ctx.stroke();ctx.fillStyle="#172238";ctx.font="bold 15px Arial";ctx.fillText(signer.full_name||school.head_name||"Principal",610,1620);ctx.font="13px Arial";ctx.fillStyle="#5a687d";ctx.fillText(signatureImage?"Digitally signed by the Principal":"Principal",610,1642);
     const base=school.verification_base_url||`${location.origin}${location.pathname}`;
     const verifyUrl=`${base}${base.includes("?")?"&":"?"}verify=${publication.verification_token}`;
     const qr=await qrCanvas(verifyUrl);
     if(qr)ctx.drawImage(qr,920,1365,210,210);
-    ctx.fillStyle="#3f4e66";ctx.font="14px Arial";ctx.fillText(`Report No.: ${report.report_number||""}`,60,1645);
-    ctx.fillText(`Published: ${isoDateTime(publication.published_at)}`,60,1672);
-    ctx.fillText(`Verification: ${String(publication.verification_token).slice(0,18)}…`,860,1605);
+    ctx.fillStyle="#3f4e66";ctx.font="14px Arial";ctx.fillText(`Report No.: ${report.report_number||""}`,60,1668);
+    ctx.fillText(`Published: ${isoDateTime(publication.published_at)}`,60,1695);
+    ctx.fillText(`Verification: ${String(publication.verification_token).slice(0,18)}…`,920,1608);
     ctx.strokeStyle=school.primary_colour||"#082d70";ctx.lineWidth=7;ctx.beginPath();ctx.moveTo(0,1738);ctx.lineTo(1240,1738);ctx.stroke();
     const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",.92));
     return imagePdf(jpeg,595.28,841.89);
@@ -1743,31 +1806,23 @@
 
 
   async function renderChildren(token) {
-    const data=await rpc("search_students",{search_text:"",target_class_id:null,target_status:null,page_number:1,page_size:100});
+    const data=await rpc("list_my_children_reports");
     if(token!==state.viewToken)return;
-    const children=data.rows||[];
+    const children=data.children||[];
     byId("content").innerHTML=`
-      <div class="page-head"><div><h3>My Children</h3><p>Published academic reports and attendance</p></div></div>
+      <div class="page-head"><div><h3>My Children</h3><p>Published report cards available for viewing and PDF download</p></div></div>
       <div class="grid ${children.length>1?"two":""}" id="childrenGrid">
         ${children.length?children.map(child=>`<section class="panel">
-          <div class="panel-header"><div class="cell-main"><img class="thumb signed-photo" data-photo="${attr(child.photo_url||"")}" src="${CONFIG.logoPath}" alt="">
-            <div class="cell-copy"><strong>${esc(fullName(child))}</strong><small>${esc(child.admission_no)} • ${esc(child.class_name||"")}</small></div></div>
-            <button class="button secondary small" data-child-id="${attr(child.id)}">View records</button></div>
-          <div class="panel-body" data-child-reports="${attr(child.id)}"><div class="skeleton"></div></div>
-        </section>`).join(""):`<section class="panel pad empty"><strong>No linked student records</strong></section>`}
+          <div class="panel-header"><div class="cell-copy"><strong>${esc(child.full_name)}</strong><small>${esc(child.admission_no)} • ${esc(child.class_name||"")}</small></div></div>
+          <div class="panel-body">${(child.reports||[]).length?(child.reports||[]).map(report=>`<div class="diff-row"><span><strong>${esc(report.term_name)}</strong><br><small>${esc(report.academic_year_name)} • ${number(report.average,1)}%</small></span>
+            <div class="button-row"><button class="button outline small" data-child-report="${attr(report.id)}">View report</button>${report.publication?.storage_path?`<button class="button secondary small" data-child-pdf="${attr(report.id)}">Download PDF</button>`:""}</div></div>`).join(""):`<div class="empty"><strong>No published reports</strong></div>`}</div>
+        </section>`).join(""):`<section class="panel pad empty"><strong>No linked student report records</strong><span>Ask the System Administrator to verify the parent-student link.</span></section>`}
       </div>`;
-    resolveSignedPhotos(byId("childrenGrid"));
-    $$("[data-child-id]").forEach(button=>button.onclick=()=>openStudentRecord(button.dataset.childId));
-    await Promise.all(children.map(async child=>{
-      try{
-        const record=await rpc("get_student_record",{target_student_id:child.id});
-        const root=$(`[data-child-reports="${child.id}"]`);if(!root)return;
-        const reports=(record.reports||[]).filter(r=>["published","withdrawn"].includes(r.status));
-        root.innerHTML=reports.length?reports.map(r=>`<div class="diff-row"><span><strong>${esc(r.term_name)}</strong><br><small>${esc(r.academic_year_name)} • ${number(r.average,1)}%</small></span>
-          <button class="button outline small" data-child-report="${attr(r.id)}">Open</button></div>`).join(""):`<div class="empty"><strong>No published reports</strong></div>`;
-      }catch(_){}
-    }));
-    $$("[data-child-report]").forEach(button=>button.onclick=()=>openReportEditor(button.dataset.childReport));
+    $$('[data-child-report]').forEach(button=>button.onclick=()=>openReportEditor(button.dataset.childReport));
+    $$('[data-child-pdf]').forEach(button=>button.onclick=()=>{
+      const report=children.flatMap(child=>child.reports||[]).find(item=>item.id===button.dataset.childPdf);
+      if(report?.publication?.storage_path)downloadOfficialPdf(report.publication);
+    });
   }
 
   async function renderTeachers(token) {
@@ -1898,128 +1953,52 @@
   }
 
 
-  async function renderHeadteachers(token) {
+  async function renderPrincipals(token) {
     byId("content").innerHTML=`
-      <div class="page-head"><div><h3>Headteacher Directory</h3><p>Leadership records, appointments, and linked accounts</p></div>
-        <div class="page-actions"><button class="button outline" id="headteacherExport">Export CSV</button><button class="button primary" id="headteacherAdd">Add headteacher</button></div></div>
-      <section class="panel">
-        <div class="toolbar">
-          <label class="search"><input id="headteacherSearch" type="search" placeholder="Search headteacher or staff number"></label>
-          <select id="headteacherStatus"><option value="">All statuses</option><option value="active">Active</option><option value="leave">On leave</option><option value="suspended">Suspended</option><option value="resigned">Resigned</option><option value="retired">Retired</option></select>
-          <select id="headteacherArchive"><option value="active">Current records</option><option value="archived">Archived records</option><option value="all">All records</option></select>
-        </div>
-        <div id="headteacherResults"><div class="empty">Loading headteachers</div></div>
-      </section>`;
-    byId("headteacherAdd").onclick=()=>openHeadteacherEditor();
-    byId("headteacherExport").onclick=exportHeadteachersCsv;
-    let timer;
-    byId("headteacherSearch").oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>{state.headteacherPage=1;loadHeadteacherPage(token)},250)};
-    byId("headteacherStatus").onchange=()=>{state.headteacherPage=1;loadHeadteacherPage(token)};
-    byId("headteacherArchive").onchange=()=>{state.headteacherPage=1;loadHeadteacherPage(token)};
-    await loadHeadteacherPage(token);
+      <div class="page-head"><div><h3>Principal Directory</h3><p>Principal names, contacts, linked accounts, and digital signing</p></div>
+        <div class="page-actions"><button class="button outline" id="headteacherExport">Export CSV</button><button class="button primary" id="headteacherAdd">Add principal</button></div></div>
+      <section class="panel"><div class="toolbar">
+        <label class="search"><input id="headteacherSearch" type="search" placeholder="Search full name, contact or staff number"></label>
+        <select id="headteacherArchive"><option value="active">Current records</option><option value="archived">Removed records</option><option value="all">All records</option></select>
+      </div><div id="headteacherResults"><div class="empty">Loading principals</div></div></section>`;
+    byId("headteacherAdd").onclick=()=>openPrincipalEditor();byId("headteacherExport").onclick=exportPrincipalsCsv;let timer;
+    byId("headteacherSearch").oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>{state.headteacherPage=1;loadPrincipalPage(token)},250)};
+    byId("headteacherArchive").onchange=()=>{state.headteacherPage=1;loadPrincipalPage(token)};await loadPrincipalPage(token);
   }
-  async function loadHeadteacherPage(token=state.viewToken) {
-    const root=byId("headteacherResults");if(!root)return;
-    root.innerHTML=`<div class="empty">Loading headteachers</div>`;
-    const data=await rpc("list_headteachers",{
-      search_text:byId("headteacherSearch")?.value.trim()||"",
-      status_filter:byId("headteacherStatus")?.value||"",
-      archive_filter:byId("headteacherArchive")?.value||"active",
-      page_number:state.headteacherPage,page_size:CONFIG.pageSize
-    });
-    if(token!==state.viewToken||!byId("headteacherResults"))return;
-    state.headteacherAdmin=data;
-    const rows=data.rows||[];
-    root.innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>Headteacher</th><th>Staff No.</th><th>Contact</th><th>Qualification</th><th>Appointment</th><th>Status</th><th></th></tr></thead><tbody>
-      ${rows.map(row=>`<tr>
-        <td><div class="cell-main"><span class="avatar small-avatar">${esc((row.first_name||"H").charAt(0).toUpperCase())}</span><div class="cell-copy"><strong>${esc(row.full_name)}</strong><small>${esc(row.profile_email||"No linked account")}</small></div></div></td>
-        <td>${esc(row.staff_no)}</td><td><div class="cell-copy"><span>${esc(row.phone||"—")}</span><small>${esc(row.email||"")}</small></div></td>
-        <td>${esc(row.qualification||"—")}</td><td>${isoDate(row.date_appointed)}</td>
-        <td>${statusBadge(row.deleted_at?"archived":row.employment_status)}</td>
-        <td><div class="table-actions"><button class="button secondary small" data-headteacher-view="${attr(row.id)}">View</button>
-          ${!row.deleted_at?`<button class="button ghost small" data-headteacher-edit="${attr(row.id)}">Edit</button><button class="button danger small" data-headteacher-archive="${attr(row.id)}">Remove</button>`:
-          `<button class="button success small" data-headteacher-restore="${attr(row.id)}">Restore</button>`}
-        </div></td></tr>`).join("")}</tbody></table></div>${pagination(data.total,data.page,data.page_size,"headteacher")}`:
-      `<div class="empty"><strong>No headteachers found</strong></div>`;
-    $$('[data-headteacher-view]',root).forEach(button=>button.onclick=()=>openHeadteacherRecord(button.dataset.headteacherView));
-    $$('[data-headteacher-edit]',root).forEach(button=>button.onclick=()=>openHeadteacherEditor(button.dataset.headteacherEdit));
-    $$('[data-headteacher-archive]',root).forEach(button=>button.onclick=()=>archiveHeadteacher(button.dataset.headteacherArchive));
-    $$('[data-headteacher-restore]',root).forEach(button=>button.onclick=()=>restoreHeadteacher(button.dataset.headteacherRestore));
-    bindPagination("headteacher",data);
+  async function loadPrincipalPage(token=state.viewToken) {
+    const root=byId("headteacherResults");if(!root)return;root.innerHTML=`<div class="empty">Loading principals</div>`;
+    const data=await rpc("list_headteachers",{search_text:byId("headteacherSearch")?.value.trim()||"",status_filter:"",archive_filter:byId("headteacherArchive")?.value||"active",page_number:state.headteacherPage,page_size:CONFIG.pageSize});
+    if(token!==state.viewToken||!byId("headteacherResults"))return;state.headteacherAdmin=data;const rows=data.rows||[];
+    root.innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>Principal</th><th>Contact</th><th>Linked Account</th><th>Signature</th><th>Status</th><th></th></tr></thead><tbody>
+      ${rows.map(row=>`<tr><td><div class="cell-main"><span class="avatar small-avatar">${esc((row.full_name||"H").charAt(0).toUpperCase())}</span><div class="cell-copy"><strong>${esc(row.full_name)}</strong></div></div></td>
+        <td>${esc(row.phone||"—")}</td><td>${esc(row.profile_email||"Not linked")}</td><td>${row.signature_path?`<span class="status published">Uploaded</span>`:`<span class="status draft">Not uploaded</span>`}</td>
+        <td>${statusBadge(row.deleted_at?"archived":"active")}</td><td><div class="table-actions"><button class="button secondary small" data-headteacher-view="${attr(row.id)}">View</button>
+          ${!row.deleted_at?`<button class="button ghost small" data-headteacher-edit="${attr(row.id)}">Edit</button><button class="button danger small" data-headteacher-archive="${attr(row.id)}">Remove</button>`:`<button class="button success small" data-headteacher-restore="${attr(row.id)}">Restore</button>`}</div></td></tr>`).join("")}</tbody></table></div>${pagination(data.total,data.page,data.page_size,"principal")}`:`<div class="empty"><strong>No principals found</strong></div>`;
+    $$('[data-headteacher-view]',root).forEach(button=>button.onclick=()=>openPrincipalRecord(button.dataset.headteacherView));
+    $$('[data-headteacher-edit]',root).forEach(button=>button.onclick=()=>openPrincipalEditor(button.dataset.headteacherEdit));
+    $$('[data-headteacher-archive]',root).forEach(button=>button.onclick=()=>archivePrincipal(button.dataset.headteacherArchive));
+    $$('[data-headteacher-restore]',root).forEach(button=>button.onclick=()=>restorePrincipal(button.dataset.headteacherRestore));bindPagination("principal",data);
   }
-  async function openHeadteacherRecord(id) {
-    const data=await rpc("get_headteacher_record",{target_headteacher_id:id});
-    const h=data.headteacher||{};
-    modal(h.full_name||"Headteacher",h.staff_no||"",`
-      <div class="grid two">
-        <section class="panel pad"><div class="metric"><span>Employment status</span><strong>${esc(h.employment_status||"—")}</strong></div>
-          <div class="metric"><span>Telephone</span><strong>${esc(h.phone||"—")}</strong></div>
-          <div class="metric"><span>Email</span><strong>${esc(h.email||"—")}</strong></div>
-          <div class="metric"><span>Qualification</span><strong>${esc(h.qualification||"—")}</strong></div>
-          <div class="metric"><span>Date appointed</span><strong>${isoDate(h.date_appointed)}</strong></div>
-          <div class="metric"><span>Linked account</span><strong>${esc(h.profile_email||"—")}</strong></div></section>
-        <section class="panel pad"><div class="section-title"><h4>Address and Notes</h4></div>
-          <div class="metric"><span>Address</span><strong>${esc(h.address||"—")}</strong></div>
-          <div class="metric"><span>Notes</span><strong>${esc(h.notes||"—")}</strong></div></section>
-      </div>`,h.deleted_at?`<button class="button success" id="headteacherRecordRestore" type="button">Restore headteacher</button>`:
-      `<button class="button primary" id="headteacherRecordEdit" type="button">Edit headteacher</button><button class="button danger" id="headteacherRecordArchive" type="button">Remove headteacher</button>`,"wide");
-    byId("headteacherRecordEdit")?.addEventListener("click",()=>{closeModal();openHeadteacherEditor(id)});
-    byId("headteacherRecordArchive")?.addEventListener("click",()=>{closeModal();archiveHeadteacher(id)});
-    byId("headteacherRecordRestore")?.addEventListener("click",()=>{closeModal();restoreHeadteacher(id)});
+  async function openPrincipalRecord(id) {
+    const data=await rpc("get_headteacher_record",{target_headteacher_id:id}),h=data.headteacher||{};
+    modal(h.full_name||"Principal","",`<div class="grid two"><section class="panel pad"><div class="metric"><span>Full name</span><strong>${esc(h.full_name||"—")}</strong></div><div class="metric"><span>Contact</span><strong>${esc(h.phone||"—")}</strong></div><div class="metric"><span>Linked account</span><strong>${esc(h.profile_email||"Not linked")}</strong></div></section>
+      <section class="panel pad"><div class="metric"><span>Digital signature</span><strong>${h.signature_path?"Uploaded":"Not uploaded"}</strong></div><p class="muted">The linked Principal uploads and manages the signature from the Principal Dashboard.</p></section></div>`,h.deleted_at?`<button class="button success" id="headteacherRecordRestore" type="button">Restore principal</button>`:`<button class="button primary" id="headteacherRecordEdit" type="button">Edit principal</button><button class="button danger" id="headteacherRecordArchive" type="button">Remove principal</button>`,"wide");
+    byId("headteacherRecordEdit")?.addEventListener("click",()=>{closeModal();openPrincipalEditor(id)});byId("headteacherRecordArchive")?.addEventListener("click",()=>{closeModal();archivePrincipal(id)});byId("headteacherRecordRestore")?.addEventListener("click",()=>{closeModal();restorePrincipal(id)});
   }
-  async function openHeadteacherEditor(id=null) {
-    let row={gender:"Other",employment_status:"active",active:true};
-    if(id){const data=await rpc("get_headteacher_record",{target_headteacher_id:id});row=data.headteacher||row}
-    else {try{row.staff_no=await rpc("generate_school_identifier",{identifier_kind:"headteacher"})}catch(_){row.staff_no=""}}
-    modal(id?"Edit Headteacher":"Add Headteacher",row.staff_no||"",`<form id="headteacherForm" class="form-stack">
-      <input type="hidden" name="id" value="${attr(row.id||"")}">
-      <input type="hidden" name="updated_at" value="${attr(row.updated_at||"")}">
-      <input type="hidden" name="profile_id" value="${attr(row.profile_id||"")}">
-      <div class="form-grid three">
-        <label class="field"><span>Staff number</span><input name="staff_no" value="${attr(row.staff_no||"")}" readonly></label>
-        <label class="field"><span>First name</span><input name="first_name" value="${attr(row.first_name||"")}" required></label>
-        <label class="field"><span>Middle name</span><input name="middle_name" value="${attr(row.middle_name||"")}"></label>
-        <label class="field"><span>Last name</span><input name="last_name" value="${attr(row.last_name||"")}" required></label>
-        <label class="field"><span>Gender</span><select name="gender">${["Male","Female","Other"].map(v=>`<option value="${v}" ${v===row.gender?"selected":""}>${v}</option>`).join("")}</select></label>
-        <label class="field"><span>Date appointed</span><input type="date" name="date_appointed" value="${attr(row.date_appointed||"")}"></label>
-        <label class="field"><span>Telephone</span><input name="phone" value="${attr(row.phone||"")}"></label>
-        <label class="field"><span>Email</span><input type="email" name="email" value="${attr(row.email||"")}"></label>
-        <label class="field"><span>Employment status</span><select name="employment_status">${["active","leave","suspended","resigned","retired"].map(v=>`<option value="${v}" ${v===row.employment_status?"selected":""}>${v.replaceAll("_"," ")}</option>`).join("")}</select></label>
-        <label class="field full"><span>Qualification</span><input name="qualification" value="${attr(row.qualification||"")}"></label>
-        <label class="field full"><span>Address</span><input name="address" value="${attr(row.address||"")}"></label>
-        <label class="field full"><span>Notes</span><textarea name="notes">${esc(row.notes||"")}</textarea></label>
-        <label class="check-field full"><input type="checkbox" name="active" ${row.active!==false?"checked":""}><span>Active headteacher</span></label>
-      </div>
-    </form>`,`<button class="button ghost" id="headteacherCancel" type="button">Cancel</button><button class="button primary" id="headteacherSave" type="submit" form="headteacherForm">Save headteacher</button>`,"wide");
-    byId("headteacherCancel").onclick=closeModal;
-    byId("headteacherForm").addEventListener("submit",event=>{event.preventDefault();saveHeadteacher()});
+  async function openPrincipalEditor(id=null) {
+    let row={active:true};if(id){const data=await rpc("get_headteacher_record",{target_headteacher_id:id});row=data.headteacher||row}else{try{row.staff_no=await rpc("generate_school_identifier",{identifier_kind:"principal"})}catch(_){row.staff_no=""}}
+    modal(id?"Edit Principal":"Add Principal","",`<form id="headteacherForm" class="form-stack"><input type="hidden" name="id" value="${attr(row.id||"")}"><input type="hidden" name="updated_at" value="${attr(row.updated_at||"")}"><input type="hidden" name="profile_id" value="${attr(row.profile_id||"")}"><input type="hidden" name="staff_no" value="${attr(row.staff_no||"")}">
+      <div class="form-grid"><label class="field full"><span>Full name</span><input name="full_name" value="${attr(row.full_name||fullName(row)||"")}" required></label><label class="field full"><span>Contact</span><input name="contact" value="${attr(row.phone||"")}" required></label></div></form>`,
+      `<button class="button ghost" id="headteacherCancel" type="button">Cancel</button><button class="button primary" id="headteacherSave" type="submit" form="headteacherForm">Save principal</button>`,"small");
+    byId("headteacherCancel").onclick=closeModal;byId("headteacherForm").addEventListener("submit",event=>{event.preventDefault();savePrincipal()});
   }
-  async function saveHeadteacher() {
-    const form=byId("headteacherForm"),button=byId("headteacherSave");
-    if(!form?.reportValidity()){toast("Headteacher not saved","Complete the required headteacher fields.","error");return}
-    const v=formObject(form);button.disabled=true;button.textContent="Saving";let saved=false;
-    try{
-      await rpc("save_headteacher",{payload:{...v,active:form.elements.active.checked,reason:v.id?"Headteacher record updated":"Headteacher record created"}});
-      saved=true;state.workspace=null;closeModal();toast("Headteacher record saved");
-      try{state.boot=await rpc("get_bootstrap_data");renderBrand();renderNav();await loadHeadteacherPage()}
-      catch(refreshError){await reportClientError(refreshError,{source:"headteacher_save",stage:"refresh"});toast("Headteacher saved","Reload the page to display the latest record.","warning",6500)}
-    }catch(error){await reportClientError(error,{source:"headteacher_save",stage:saved?"refresh":"record"});toast(saved?"Headteacher saved":"Headteacher not saved",saved?"Reload the page to display the latest record.":friendlyError(error),saved?"warning":"error",6500)}finally{button.disabled=false;button.textContent="Save headteacher"}
+  async function savePrincipal() {
+    const form=byId("headteacherForm"),button=byId("headteacherSave");if(!form?.reportValidity()){toast("Principal not saved","Enter the full name and contact.","error");return}
+    const v=formObject(form);button.disabled=true;button.textContent="Saving";let saved=false;try{await rpc("save_headteacher",{payload:{...v,reason:v.id?"Principal record updated":"Principal record created"}});saved=true;state.workspace=null;closeModal();toast("Principal record saved");try{state.boot=await rpc("get_bootstrap_data");renderBrand();renderNav();await loadPrincipalPage()}catch(refreshError){await reportClientError(refreshError,{source:"headteacher_save",stage:"refresh"});toast("Principal saved","Reload the page to display the latest record.","warning",6500)}}catch(error){await reportClientError(error,{source:"headteacher_save",stage:saved?"refresh":"record"});toast(saved?"Principal saved":"Principal not saved",saved?"Reload the page to display the latest record.":friendlyError(error),saved?"warning":"error",6500)}finally{button.disabled=false;button.textContent="Save principal"}
   }
-  async function archiveHeadteacher(id) {
-    const ok=await confirmAction("Remove Headteacher","The leadership record will be archived while audit history remains preserved.","Remove",true);if(!ok)return;
-    try{await rpc("archive_headteacher",{target_headteacher_id:id,reason_text:"Headteacher removed from active records"});state.workspace=null;toast("Headteacher removed");await loadHeadteacherPage()}
-    catch(error){toast("Headteacher not removed",friendlyError(error),"error")}
-  }
-  async function restoreHeadteacher(id) {
-    const ok=await confirmAction("Restore Headteacher","The leadership record will return to the active directory.","Restore");if(!ok)return;
-    try{await rpc("restore_headteacher",{target_headteacher_id:id,reason_text:"Headteacher restored to active records"});state.workspace=null;toast("Headteacher restored");await loadHeadteacherPage()}
-    catch(error){toast("Headteacher not restored",friendlyError(error),"error")}
-  }
-  async function exportHeadteachersCsv() {
-    const data=await rpc("list_headteachers",{search_text:byId("headteacherSearch")?.value||"",status_filter:byId("headteacherStatus")?.value||"",archive_filter:byId("headteacherArchive")?.value||"active",page_number:1,page_size:100});
-    const headers=["staff_no","first_name","middle_name","last_name","gender","phone","email","qualification","date_appointed","employment_status"];
-    downloadText("headteachers.csv",[headers.join(","),...(data.rows||[]).map(row=>headers.map(h=>csvCell(row[h])).join(","))].join("\n"),"text/csv");
-  }
+  async function archivePrincipal(id) {const ok=await confirmAction("Remove Principal","The record will be archived while audit history and published reports remain preserved.","Remove",true);if(!ok)return;try{await rpc("archive_headteacher",{target_headteacher_id:id,reason_text:"Principal removed from active records"});state.workspace=null;toast("Principal removed");await loadPrincipalPage()}catch(error){toast("Principal not removed",friendlyError(error),"error")}}
+  async function restorePrincipal(id) {const ok=await confirmAction("Restore Principal","The principal record will return to the active directory.","Restore");if(!ok)return;try{await rpc("restore_headteacher",{target_headteacher_id:id,reason_text:"Principal restored to active records"});state.workspace=null;toast("Principal restored");await loadPrincipalPage()}catch(error){toast("Principal not restored",friendlyError(error),"error")}}
+  async function exportPrincipalsCsv() {const data=await rpc("list_headteachers",{search_text:byId("headteacherSearch")?.value||"",status_filter:"",archive_filter:byId("headteacherArchive")?.value||"active",page_number:1,page_size:100});const headers=["staff_no","full_name","phone","profile_email"];downloadText("principals.csv",[headers.join(","),...(data.rows||[]).map(row=>headers.map(h=>csvCell(row[h])).join(","))].join("\n"),"text/csv")}
 
   async function renderUsers(token) {
     const data=await rpc("list_profiles_with_access");
@@ -2030,7 +2009,7 @@
         <div class="page-actions"><button class="button primary" id="userAdd">Create user</button></div></div>
       <section class="panel">
         <div class="toolbar"><label class="search"><input id="userSearch" type="search" placeholder="Search name or email"></label>
-          <select id="userRoleFilter"><option value="">All roles</option>${["system_admin","headteacher","academic_admin","class_teacher","subject_teacher","records_officer","viewer","parent_guardian"].map(r=>`<option value="${r}">${esc(ROLE_LABELS[r])}</option>`).join("")}</select>
+          <select id="userRoleFilter"><option value="">All roles</option>${["system_admin","principal","class_teacher","subject_teacher","parent_guardian"].map(r=>`<option value="${r}">${esc(ROLE_LABELS[r])}</option>`).join("")}</select>
           <select id="userStatusFilter"><option value="">All accounts</option><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
         <div id="userResults"></div>
       </section>`;
@@ -2055,12 +2034,13 @@
         <td>${user.active?`<span class="status published">Active</span>`:`<span class="status withdrawn">Inactive</span>`}</td>
         <td>${user.mfa_required?`<span class="status approved">Required</span>`:`<span class="status draft">Optional</span>`}</td>
         <td>${(user.access||[]).length?`<div class="chip-list">${user.access.slice(0,3).map(a=>`<span class="chip">${esc(a.class_name)}${a.subject_name?` • ${esc(a.subject_name)}`:""}</span>`).join("")}${user.access.length>3?`<span class="chip">+${user.access.length-3}</span>`:""}</div>`:"School role"}</td>
-        <td>${isoDateTime(user.last_seen_at||user.last_sign_in_at)}</td><td><button class="button ghost small" data-user-edit="${attr(user.id)}">Edit</button></td>
+        <td>${isoDateTime(user.last_seen_at||user.last_sign_in_at)}</td><td><div class="table-actions"><button class="button ghost small" data-user-edit="${attr(user.id)}">Edit</button>${user.id!==state.boot.profile.id?`<button class="button danger small" data-user-delete="${attr(user.id)}">Delete</button>`:""}</div></td>
       </tr>`).join("")}</tbody></table></div>`:`<div class="empty"><strong>No users found</strong></div>`;
     $$("[data-user-edit]",root).forEach(button=>button.onclick=()=>openUserEditor(button.dataset.userEdit));
+    $$("[data-user-delete]",root).forEach(button=>button.onclick=()=>deleteUserAccount(button.dataset.userDelete));
   }
   function openUserEditor(id=null) {
-    const user=id?(state.userAdmin.profiles||[]).find(x=>x.id===id):{role:"viewer",active:true,mfa_required:false,access:[]};if(!user)return;
+    const user=id?(state.userAdmin.profiles||[]).find(x=>x.id===id):{role:"parent_guardian",active:true,mfa_required:false,access:[]};if(!user)return;
     state.userAccessRows=(user.access||[]).map(x=>({...x}));
     modal(id?"Edit User Account":"Create User Account",user.email||"",`<form id="userForm" class="form-stack">
       <div class="form-grid">
@@ -2069,14 +2049,13 @@
         <label class="field"><span>Email address</span><input name="email" type="email" value="${attr(user.email||"")}" required></label>
         <label class="field"><span>Telephone</span><input name="phone" value="${attr(user.phone||"")}"></label>
         <label class="field"><span>Role</span><select id="userRoleSelect" name="role">
-          ${["system_admin","headteacher","academic_admin","class_teacher","subject_teacher","records_officer","viewer","parent_guardian"].map(r=>`<option value="${r}" ${r===user.role?"selected":""}>${esc(ROLE_LABELS[r])}</option>`).join("")}
+          ${["system_admin","principal","class_teacher","subject_teacher","parent_guardian"].map(r=>`<option value="${r}" ${r===user.role?"selected":""}>${esc(ROLE_LABELS[r])}</option>`).join("")}
         </select></label>
         <label class="field full"><span>${id?"New password":"Password"}</span><div class="password-wrap"><input id="adminUserPassword" name="password" type="password" autocomplete="new-password" ${id?"":"required"}><button id="generateUserPassword" class="button ghost small" type="button">Generate</button></div></label>
         <label class="check-field"><input name="active" type="checkbox" ${user.active!==false?"checked":""}><span>Active account</span></label>
         <label class="check-field"><input name="mfa_required" type="checkbox" ${user.mfa_required?"checked":""}><span>Require multi-factor authentication</span></label>
       </div>
-      <div class="section-title"><h4>Delegated Class Access</h4><button class="button secondary small" id="userAccessAdd" type="button">Add access</button></div>
-      <div id="userAccessRows"></div>
+      <div id="userAccessSection"><div class="section-title"><h4>Delegated Class Access</h4><button class="button secondary small" id="userAccessAdd" type="button">Add access</button></div><div id="userAccessRows"></div></div>
     </form>`,`<button class="button ghost" id="userCancel" type="button">Cancel</button><button class="button primary" id="userSave" type="button">${id?"Save account":"Create account"}</button>`,"wide");
     renderUserAccessRows();
     renderUserStaffSelector(id||"",user.headteacher_id||user.teacher_id||"");
@@ -2092,19 +2071,19 @@
   }
 
   function staffRecordsForUserRole(roleName,userId="") {
-    const source=roleName==="headteacher"?(state.userAdmin?.headteacher_records||[]):
+    const source=roleName==="principal"?(state.userAdmin?.headteacher_records||[]):
       (["class_teacher","subject_teacher"].includes(roleName)?(state.userAdmin?.teacher_records||[]):[]);
     return source.filter(record=>!record.profile_id||record.profile_id===userId);
   }
   function renderUserStaffSelector(userId="",selectedId="") {
-    const roleName=byId("userRoleSelect")?.value||"viewer",field=byId("userStaffField"),select=byId("userStaffSelect"),label=byId("userStaffLabel");
+    const roleName=byId("userRoleSelect")?.value||"parent_guardian",field=byId("userStaffField"),select=byId("userStaffSelect"),label=byId("userStaffLabel");
     if(!field||!select||!label)return;
-    const requiredRole=["headteacher","class_teacher","subject_teacher"].includes(roleName);
+    const requiredRole=["principal","class_teacher","subject_teacher"].includes(roleName);
     field.classList.toggle("hidden",!requiredRole);select.required=requiredRole;
     if(!requiredRole){select.innerHTML='<option value="">Not applicable</option>';select.value="";return}
     const rows=staffRecordsForUserRole(roleName,userId);
-    label.textContent=roleName==="headteacher"?"Headteacher record":"Teacher record";
-    select.innerHTML=optionList(rows,"id","label",selectedId,roleName==="headteacher"?"Select headteacher":"Select teacher");
+    label.textContent=roleName==="principal"?"Principal record":"Teacher record";
+    select.innerHTML=optionList(rows,"id","label",selectedId,roleName==="principal"?"Select principal":"Select teacher");
     if(selectedId&&rows.some(row=>row.id===selectedId))select.value=selectedId;
     select.onchange=()=>{
       const record=rows.find(item=>item.id===select.value);if(!record)return;
@@ -2124,7 +2103,7 @@
     return chars.join("");
   }
   function renderUserAccessRows() {
-    const root=byId("userAccessRows");if(!root)return;
+    const root=byId("userAccessRows"),section=byId("userAccessSection");if(!root)return;const teacherRole=["class_teacher","subject_teacher"].includes(byId("userRoleSelect")?.value);if(section)section.classList.toggle("hidden",!teacherRole);if(!teacherRole){state.userAccessRows=[];root.innerHTML="";return;}
     root.innerHTML=state.userAccessRows.length?state.userAccessRows.map((row,index)=>{const assignedIds=new Set((state.userAdmin.class_subjects||[]).filter(item=>item.class_id===row.class_id&&item.active!==false).map(item=>item.subject_id));const choices=(state.userAdmin.subjects||[]).filter(item=>!row.class_id||assignedIds.has(item.id));return `<div class="form-grid three" data-access-index="${index}" style="margin-bottom:10px">
       <label class="field"><span>Class</span><select data-access-key="class_id">${optionList(state.userAdmin.classes||[],"id","name",row.class_id)}</select></label>
       <label class="field"><span>Subject</span><select data-access-key="subject_id">${optionList(choices,"id","name",row.subject_id,"All subjects")}</select></label>
@@ -2161,7 +2140,7 @@
     try{
       if(!userId&&String(v.password||"").length<8)throw new Error("Password must contain at least 8 characters");
       if(userId&&v.password&&String(v.password).length<8)throw new Error("Password must contain at least 8 characters");
-      if(["headteacher","class_teacher","subject_teacher"].includes(v.role)&&!v.staff_record_id)throw new Error("Select the corresponding staff record");
+      if(["principal","class_teacher","subject_teacher"].includes(v.role)&&!v.staff_record_id)throw new Error("Select the corresponding staff record");
       const payload={user_id:userId||undefined,full_name:v.full_name.trim(),email:v.email.trim(),phone:v.phone.trim(),role:v.role,staff_record_id:v.staff_record_id||"",
         password:v.password||"",active:form.elements.active.checked,mfa_required:form.elements.mfa_required.checked,
         access:state.userAccessRows.filter(x=>x.class_id),reason:userId?"User account updated":"User account created"};
@@ -2171,23 +2150,35 @@
     }catch(error){await reportClientError(error,{source:"user_account_save",user_id:userId,stage:saved?"refresh":"record"});toast(saved?"Account saved":"User account not saved",saved?"Reload the page to display the latest access record.":friendlyError(error),saved?"warning":"error",6500)}finally{button.disabled=false;button.textContent=userId?"Save account":"Create account"}
   }
 
+  async function deleteUserAccount(userId) {
+    const user=(state.userAdmin?.profiles||[]).find(item=>item.id===userId);if(!user)return;
+    const ok=await confirmAction("Delete User Account",`Permanently delete ${user.full_name||user.email||"this account"}? The linked staff record will remain but will no longer have a login.`,"Delete",true);if(!ok)return;
+    try{
+      await invokeAdminUserManagement("delete",{user_id:userId,reason:"User account permanently deleted by the System Administrator"});
+      toast("User account deleted");state.workspace=null;
+      state.userAdmin=await rpc("list_profiles_with_access");state.boot=await rpc("get_bootstrap_data");renderBrand();renderNav();renderUserRows();
+    }catch(error){toast("User account not deleted",friendlyError(error),"error",6500)}
+  }
+
   async function renderNotifications(token) {
     const data=await rpc("list_notifications",{page_number:1,page_size:100});
     if(token!==state.viewToken)return;
     state.notifications=data.rows||[];
     byId("content").innerHTML=`
-      <div class="page-head"><div><h3>Notifications</h3><p>${number(data.unread)} unread</p></div>
-        <div class="page-actions">${data.unread?`<button class="button secondary" id="markAllRead">Mark all read</button>`:""}</div></div>
+      <div class="page-head"><div><h3>Notifications</h3><p>${number(data.unread)} unread • ${number(data.total)} total</p></div>
+        <div class="page-actions">${data.unread?`<button class="button secondary" id="markAllRead">Mark all read</button>`:""}${state.notifications.length?`<button class="button danger" id="clearNotifications">Clear notifications</button>`:""}</div></div>
       <section class="panel">
         ${state.notifications.length?state.notifications.map(item=>`<div class="panel-header" data-notification-id="${attr(item.id)}" style="${item.read_at?"opacity:.7":""}">
           <div><h4>${esc(item.title)}</h4><p>${esc(item.body)} • ${isoDateTime(item.created_at)}</p></div>
           <div class="button-row">${item.entity_type==="report"&&item.entity_id?`<button class="button outline small" data-notification-report="${attr(item.entity_id)}">Open</button>`:""}
-            ${!item.read_at?`<button class="button ghost small" data-notification-read="${attr(item.id)}">Mark read</button>`:""}</div>
+            ${!item.read_at?`<button class="button ghost small" data-notification-read="${attr(item.id)}">Mark read</button>`:""}<button class="button danger small" data-notification-delete="${attr(item.id)}">Delete</button></div>
         </div>`).join(""):`<div class="empty"><strong>No notifications</strong></div>`}
       </section>`;
     byId("markAllRead")?.addEventListener("click",async()=>{await rpc("mark_notifications_read",{notification_ids:null});await loadNotificationCount();renderNotifications(state.viewToken,true)});
-    $$("[data-notification-read]").forEach(button=>button.onclick=async()=>{await rpc("mark_notifications_read",{notification_ids:[button.dataset.notificationRead]});await loadNotificationCount();renderNotifications(state.viewToken,true)});
-    $$("[data-notification-report]").forEach(button=>button.onclick=()=>openReportEditor(button.dataset.notificationReport));
+    byId("clearNotifications")?.addEventListener("click",async()=>{if(!await confirmAction("Clear Notifications","Delete all notifications for this account?","Clear",true))return;await rpc("delete_notifications",{notification_ids:null});await loadNotificationCount();renderNotifications(state.viewToken,true)});
+    $$('[data-notification-read]').forEach(button=>button.onclick=async()=>{await rpc("mark_notifications_read",{notification_ids:[button.dataset.notificationRead]});await loadNotificationCount();renderNotifications(state.viewToken,true)});
+    $$('[data-notification-delete]').forEach(button=>button.onclick=async()=>{if(!await confirmAction("Delete Notification","Remove this notification?","Delete",true))return;await rpc("delete_notifications",{notification_ids:[button.dataset.notificationDelete]});await loadNotificationCount();renderNotifications(state.viewToken,true)});
+    $$('[data-notification-report]').forEach(button=>button.onclick=()=>openReportEditor(button.dataset.notificationReport));
   }
 
   async function renderAudit(token) {
@@ -2196,7 +2187,7 @@
     state.audit=data;
     const tables=[...new Set((data.rows||[]).map(x=>x.table_name))].sort();
     byId("content").innerHTML=`
-      <div class="page-head"><div><h3>Audit Trail</h3><p>${number(data.total)} recorded changes</p></div></div>
+      <div class="page-head"><div><h3>Audit Trail</h3><p>${number(data.total)} recorded changes</p></div><div class="page-actions"><button class="button danger" id="auditReset">Reset audit log</button></div></div>
       <section class="panel">
         <div class="toolbar"><select id="auditTable"><option value="">All records</option>${tables.map(t=>`<option value="${attr(t)}">${esc(t.replaceAll("_"," "))}</option>`).join("")}</select></div>
         <div id="auditRows">${auditRows(data.rows||[])}</div>
@@ -2205,23 +2196,27 @@
       const filtered=await rpc("list_audit_events",{target_table:byId("auditTable").value||null,target_record_id:null,page_number:1,page_size:100});
       state.audit=filtered;byId("auditRows").innerHTML=auditRows(filtered.rows||[]);bindAuditRows();
     };
+    byId("auditReset").onclick=resetAuditLog;
     bindAuditRows();
   }
   function auditRows(rows) {
     return rows.length?`<div class="table-wrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Record</th><th>Action</th><th>Reason</th><th></th></tr></thead><tbody>
       ${rows.map((row,index)=>`<tr><td>${isoDateTime(row.created_at)}</td><td>${esc(row.actor_name||"System")}</td><td>${esc(row.table_name)}<br><small>${esc(row.record_id||"")}</small></td>
-      <td><span class="chip">${esc(row.action)}</span></td><td>${esc(row.reason||"")}</td><td><button class="button ghost small" data-audit-index="${index}">Details</button></td></tr>`).join("")}
+      <td><span class="chip">${esc(row.action)}</span></td><td>${esc(row.reason||"")}</td><td><div class="table-actions"><button class="button ghost small" data-audit-index="${index}">Details</button><button class="button danger small" data-audit-delete="${attr(row.id)}">Delete</button></div></td></tr>`).join("")}
     </tbody></table></div>`:`<div class="empty"><strong>No audit events</strong></div>`;
   }
   function bindAuditRows() {
-    $$("[data-audit-index]").forEach(button=>button.onclick=()=>{
+    $$('[data-audit-index]').forEach(button=>button.onclick=()=>{
       const row=(state.audit.rows||[])[Number(button.dataset.auditIndex)];
-      modal("Audit Event",`${row.table_name} • ${row.action}`,`<div class="revision-compare">
-        <div class="diff-card"><h4>Before</h4><pre>${esc(JSON.stringify(row.old_data,null,2))}</pre></div>
-        <div class="diff-card"><h4>After</h4><pre>${esc(JSON.stringify(row.new_data,null,2))}</pre></div>
-      </div>`,`<button class="button ghost" id="auditClose" type="button">Close</button>`,"wide");
+      modal("Audit Event",`${row.table_name} • ${row.action}`,`<div class="revision-compare"><div class="diff-card"><h4>Before</h4><pre>${esc(JSON.stringify(row.old_data,null,2))}</pre></div><div class="diff-card"><h4>After</h4><pre>${esc(JSON.stringify(row.new_data,null,2))}</pre></div></div>`,`<button class="button ghost" id="auditClose" type="button">Close</button>`,"wide");
       byId("auditClose").onclick=closeModal;
     });
+    $$('[data-audit-delete]').forEach(button=>button.onclick=async()=>{if(!await confirmAction("Delete Audit Event","Remove this audit event permanently?","Delete",true))return;await rpc("delete_audit_events",{event_ids:[Number(button.dataset.auditDelete)]});toast("Audit event deleted");await renderAudit(state.viewToken,true)});
+  }
+  async function resetAuditLog() {
+    modal("Reset Audit Log","This permanently deletes the current audit trail.",`<div class="form-stack"><p class="help-text">Type <strong>RESET AUDIT LOG</strong> to confirm.</p><label class="field"><span>Confirmation</span><input id="auditResetConfirm" autocomplete="off"></label></div>`,`<button class="button ghost" id="auditResetCancel" type="button">Cancel</button><button class="button danger" id="auditResetRun" type="button">Reset audit log</button>`,"small");
+    byId("auditResetCancel").onclick=closeModal;
+    byId("auditResetRun").onclick=async()=>{const value=byId("auditResetConfirm").value;try{const result=await rpc("reset_audit_log",{confirmation_text:value});closeModal();toast("Audit log reset",`${number(result.deleted)} events deleted`);await renderAudit(state.viewToken,true)}catch(error){toast("Audit log not reset",friendlyError(error),"error")}};
   }
 
   async function renderSettings(token) {
@@ -2242,7 +2237,7 @@
             <label class="field"><span>Telephone</span><input name="phone" value="${attr(school.phone||"")}" ${!can("manage_users")?"disabled":""}></label>
             <label class="field"><span>Email</span><input type="email" name="email" value="${attr(school.email||"")}" ${!can("manage_users")?"disabled":""}></label>
             <label class="field"><span>Website</span><input name="website" value="${attr(school.website||"")}" ${!can("manage_users")?"disabled":""}></label>
-            <label class="field"><span>Headteacher</span><input name="head_name" value="${attr(school.head_name||"")}" ${!can("manage_users")?"disabled":""}></label>
+            <label class="field"><span>Principal</span><input name="head_name" value="${attr(school.head_name||"")}" ${!can("manage_users")?"disabled":""}></label>
             <label class="field"><span>Report number prefix</span><input name="report_number_prefix" value="${attr(school.report_number_prefix||"NIS")}" ${!can("manage_users")?"disabled":""}></label>
             <label class="field"><span>Time zone</span><input name="timezone" value="${attr(school.timezone||"Africa/Accra")}" ${!can("manage_users")?"disabled":""}></label>
             <label class="field full"><span>Verification base URL</span><input name="verification_base_url" value="${attr(school.verification_base_url||"")}" ${!can("manage_users")?"disabled":""}></label>
