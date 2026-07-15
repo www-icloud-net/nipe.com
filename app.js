@@ -50,7 +50,8 @@
     channels:[], photoUrls:new Map(), pdfUrls:new Map(), signatureUrls:new Map(), online:navigator.onLine,
     studentPage:1, teacherPage:1, headteacherPage:1, reportPage:1, currentStudent:null, reportEditor:null,
     academicTab:"periods", notifications:[], mfaFactorId:null, mfaEnrollment:null,
-    teacherAdmin:null, headteacherAdmin:null, userAdmin:null, userAccessRows:[], guardianAccounts:[], autoComments:null,
+    teacherAdmin:null, headteacherAdmin:null, userAdmin:null, userAccessRows:[], assignmentSelections:new Set(), guardianAccounts:[], autoComments:null,
+    passwordChangeRequired:false,
     workspace:null, studentClassFilter:"", reportClassFilter:"",
     initialized:false, realtimeConnected:0, lastSync:null, pending:0, conflicts:0
   };
@@ -121,11 +122,13 @@
     if(!dialog.open) dialog.showModal();
     return dialog;
   }
-  function closeModal(){
+  function closeModal(force=false){
+    if(state.passwordChangeRequired&&!force)return;
     const dialog=byId("modal");
     if(dialog.open) dialog.close();
     byId("modalBody").replaceChildren();
     byId("modalFooter").replaceChildren();
+    byId("modalClose").classList.remove("hidden");
   }
   function confirmAction(title,message,confirmLabel="Continue",danger=false) {
     return new Promise(resolve=>{
@@ -363,7 +366,7 @@
       if(!state.boot?.profile?.active) throw new Error("Account inactive");
       const verified=await ensureMfa();
       if(!verified){setLoading(false);return;}
-      await initializeApp();
+      await continueAuthenticatedSession();
     } catch(error) {
       await reportClientError(error,{source:"bootstrap"});
       await state.client.auth.signOut().catch(()=>{});
@@ -399,9 +402,61 @@
       if(error) throw error;
       byId("mfaCode").value="";state.mfaEnrollment=null;
       state.boot=await rpc("get_bootstrap_data");
-      await initializeApp();
+      await continueAuthenticatedSession();
     } catch(error){setMfaMessage(friendlyError(error));}
     finally{button.disabled=false;}
+  }
+
+
+  async function continueAuthenticatedSession() {
+    if(state.boot?.profile?.must_change_password){
+      openRequiredPasswordChange();
+      return;
+    }
+    await initializeApp();
+  }
+
+  function openRequiredPasswordChange() {
+    state.passwordChangeRequired=true;
+    renderBrand();
+    showOnly("appShell");
+    byId("mainNav").innerHTML="";
+    byId("pageTitle").textContent="Password Change Required";
+    byId("pageSubtitle").textContent="Set a private password before continuing";
+    byId("content").innerHTML='<div class="empty"><strong>Your account is secured. Complete the required password change to continue.</strong></div>';
+    setLoading(false);
+    modal("Change Password Required","The System Administrator requires you to replace the temporary password.",`<form id="requiredPasswordForm" class="form-stack">
+      <label class="field"><span>New password</span><input name="password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <label class="field"><span>Confirm new password</span><input name="confirm_password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <p class="help-text">Use at least eight characters. Do not reuse the temporary password.</p>
+    </form>`,`<button class="button ghost" id="requiredPasswordSignOut" type="button">Sign out</button><button class="button primary" id="requiredPasswordSave" type="button">Change password</button>`,"small");
+    byId("modalClose").classList.add("hidden");
+    byId("requiredPasswordSignOut").onclick=async()=>{
+      state.passwordChangeRequired=false;
+      closeModal(true);
+      await logout();
+    };
+    byId("requiredPasswordSave").onclick=async()=>{
+      const form=byId("requiredPasswordForm"),button=byId("requiredPasswordSave");
+      if(!form?.reportValidity())return;
+      const password=form.elements.password.value;
+      if(password!==form.elements.confirm_password.value){toast("Passwords do not match","","error");return}
+      button.disabled=true;button.textContent="Changing";
+      try{
+        const {error}=await state.client.auth.updateUser({password});
+        if(error)throw error;
+        await rpc("complete_required_password_change");
+        state.boot=await rpc("get_bootstrap_data");
+        state.passwordChangeRequired=false;
+        closeModal(true);
+        toast("Password changed","Your private password is now active.");
+        await initializeApp();
+      }catch(error){
+        toast("Password not changed",friendlyError(error),"error",6500);
+      }finally{
+        button.disabled=false;button.textContent="Change password";
+      }
+    };
   }
 
   async function initializeApp() {
@@ -1192,24 +1247,65 @@
     } catch(error){await reportClientError(error,{source:"academic_save",entity_type:table,stage:saved?"refresh":"record"});toast(saved?"Record saved":"Record not saved",saved?"Reload the page to display the latest record.":friendlyError(error),saved?"warning":"error",6500)}
     finally{button.disabled=false}
   }
+  function classSubjectPairKey(classId,subjectId){return `${classId}|${subjectId}`}
+  function renderAssignmentChecklist() {
+    const root=byId("assignmentChecklist");if(!root)return;
+    const classes=state.academic.classes||[],subjects=state.academic.subjects||[];
+    const selected=state.assignmentSelections;
+    const total=selected.size;
+    root.innerHTML=`<details class="checklist-dropdown" open>
+      <summary><span>Classes and subjects</span><strong>${total?`${total} selected`:"Select assignments"}</strong></summary>
+      <div class="checklist-menu">
+        <div class="checklist-toolbar"><span>Check the exact class-subject combinations taught by this teacher.</span><button class="button ghost small" id="clearAssignmentChecks" type="button">Clear</button></div>
+        ${classes.map(cls=>`<section class="checklist-group">
+          <div class="checklist-group-head"><strong>${esc(cls.name)}</strong><label class="check-field compact"><input type="checkbox" data-assignment-class-all="${attr(cls.id)}"><span>All subjects</span></label></div>
+          <div class="checklist-options">${subjects.map(subject=>{
+            const key=classSubjectPairKey(cls.id,subject.id);
+            return `<label class="checklist-option"><input type="checkbox" data-assignment-pair="${attr(key)}" ${selected.has(key)?"checked":""}><span>${esc(subject.name)}</span><small>${esc(subject.code||"")}</small></label>`;
+          }).join("")}</div>
+        </section>`).join("")}
+      </div>
+    </details>`;
+    $$("[data-assignment-pair]",root).forEach(input=>input.onchange=()=>{
+      if(input.checked)selected.add(input.dataset.assignmentPair);else selected.delete(input.dataset.assignmentPair);
+      renderAssignmentChecklist();
+    });
+    $$("[data-assignment-class-all]",root).forEach(input=>{
+      const classId=input.dataset.assignmentClassAll;
+      const keys=subjects.map(subject=>classSubjectPairKey(classId,subject.id));
+      input.checked=keys.length>0&&keys.every(key=>selected.has(key));
+      input.indeterminate=keys.some(key=>selected.has(key))&&!input.checked;
+      input.onchange=()=>{
+        keys.forEach(key=>input.checked?selected.add(key):selected.delete(key));
+        renderAssignmentChecklist();
+      };
+    });
+    byId("clearAssignmentChecks").onclick=()=>{selected.clear();renderAssignmentChecklist()};
+  }
+
   function openAssignmentEditor(id=null) {
     const row=(state.academic.class_subjects||[]).find(x=>x.id===id)||{};
     const subjectTeacherProfiles=(state.academic.profiles||[]).filter(profile=>["class_teacher","subject_teacher"].includes(profile.role));
-    modal(id?"Edit Subject Assignment":"Assign Subject","",`<form id="entityForm" class="form-grid">
-      <label class="field"><span>Class</span><select name="class_id" required>${optionList(state.academic.classes||[],"id","name",row.class_id)}</select></label>
-      <label class="field"><span>Subject</span><select name="subject_id" required>${optionList(state.academic.subjects||[],"id","name",row.subject_id)}</select></label>
-      <label class="field full"><span>Teacher</span><select name="teacher_id">${optionList(subjectTeacherProfiles,"id","full_name",row.teacher_id,"Unassigned")}</select></label>
-      <label class="check-field full"><input type="checkbox" name="active" ${row.active!==false?"checked":""}><span>Active assignment</span></label>
-    </form>`,`<button class="button ghost" id="entityCancel" type="button">Cancel</button><button class="button primary" id="entitySave" type="button">Save</button>`,"small");
+    state.assignmentSelections=new Set(row.class_id&&row.subject_id?[classSubjectPairKey(row.class_id,row.subject_id)]:[]);
+    modal(id?"Edit Subject Assignment":"Assign Subjects","Select every class and subject taught by the selected teacher.",`<form id="entityForm" class="form-stack">
+      <label class="field"><span>Teacher</span><select name="teacher_id">${optionList(subjectTeacherProfiles,"id","full_name",row.teacher_id,"Select teacher")}</select></label>
+      <div id="assignmentChecklist"></div>
+      <label class="check-field"><input type="checkbox" name="active" ${row.active!==false?"checked":""}><span>Active assignments</span></label>
+    </form>`,`<button class="button ghost" id="entityCancel" type="button">Cancel</button><button class="button primary" id="entitySave" type="button">Save assignments</button>`,"wide");
+    renderAssignmentChecklist();
     byId("entityCancel").onclick=closeModal;
     byId("entitySave").onclick=async()=>{
-      const form=byId("entityForm"),v=formObject(form),button=byId("entitySave");if(!form?.reportValidity())return;button.disabled=true;let saved=false;
+      const form=byId("entityForm"),v=formObject(form),button=byId("entitySave");if(!form?.reportValidity())return;
+      const selections=[...state.assignmentSelections].map(key=>{const [class_id,subject_id]=key.split("|");return {class_id,subject_id}});
+      if(!selections.length){toast("Select at least one class and subject","","error");return}
+      button.disabled=true;button.textContent="Saving";let saved=false;
       try{
-        const record={id:id||null,class_id:v.class_id,subject_id:v.subject_id,teacher_id:v.teacher_id||null,active:form.elements.active.checked,reason:id?"Class subject assignment updated":"Class subject assigned"};
-        await rpc("save_class_subject_assignment",{payload:record});saved=true;
-        state.workspace=null;closeModal();toast("Assignment saved");
-        try{await refreshAcademic()}catch(refreshError){await reportClientError(refreshError,{source:"assignment_save",stage:"refresh"});toast("Assignment saved","Reload the page to display the latest assignment.","warning",6500)}
-      }catch(error){await reportClientError(error,{source:"assignment_save",stage:saved?"refresh":"record"});toast(saved?"Assignment saved":"Assignment not saved",saved?"Reload the page to display the latest assignment.":friendlyError(error),saved?"warning":"error",6500)}finally{button.disabled=false}
+        await rpc("save_class_subject_assignments_batch",{payload:{id:id||null,teacher_id:v.teacher_id||null,active:form.elements.active.checked,selections,
+          reason:id?"Class-subject assignments updated":"Class-subject assignments created"}});
+        saved=true;state.workspace=null;closeModal();toast(`${selections.length} assignment${selections.length===1?"":"s"} saved`);
+        try{await refreshAcademic()}catch(refreshError){await reportClientError(refreshError,{source:"assignment_batch_save",stage:"refresh"});toast("Assignments saved","Reload to display the latest assignments.","warning",6500)}
+      }catch(error){await reportClientError(error,{source:"assignment_batch_save",stage:saved?"refresh":"record"});toast(saved?"Assignments saved":"Assignments not saved",saved?"Reload to display the latest assignments.":friendlyError(error),saved?"warning":"error",6500)}
+      finally{button.disabled=false;button.textContent="Save assignments"}
     };
   }
   function openSchemeEditor(id=null) {
@@ -2039,16 +2135,18 @@
       if(status==="inactive"&&user.active)return false;
       return true;
     });
-    root.innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Account</th><th>MFA</th><th>Class Access</th><th>Last Seen</th><th></th></tr></thead><tbody>
+    root.innerHTML=rows.length?`<div class="table-wrap"><table><thead><tr><th>User</th><th>Role</th><th>Account</th><th>MFA</th><th>Password</th><th>Class Access</th><th>Last Seen</th><th></th></tr></thead><tbody>
       ${rows.map(user=>`<tr>
         <td><div class="cell-copy"><strong>${esc(user.full_name||"Unnamed user")}</strong><small>${esc(user.email||user.phone||"")}${user.staff_no?` • ${esc(user.staff_no)}`:""}</small></div></td>
         <td>${esc(ROLE_LABELS[user.role]||user.role)}</td>
         <td>${user.active?`<span class="status published">Active</span>`:`<span class="status withdrawn">Inactive</span>`}</td>
         <td>${user.mfa_required?`<span class="status approved">Required</span>`:`<span class="status draft">Optional</span>`}</td>
+        <td>${user.must_change_password?`<span class="status withdrawn">Change required</span>`:`<span class="status published">Current</span>`}</td>
         <td>${(user.access||[]).length?`<div class="chip-list">${user.access.slice(0,3).map(a=>`<span class="chip">${esc(a.class_name)}${a.subject_name?` • ${esc(a.subject_name)}`:""}</span>`).join("")}${user.access.length>3?`<span class="chip">+${user.access.length-3}</span>`:""}</div>`:"School role"}</td>
-        <td>${isoDateTime(user.last_seen_at||user.last_sign_in_at)}</td><td><div class="table-actions"><button class="button ghost small" data-user-edit="${attr(user.id)}">Edit</button>${user.id!==state.boot.profile.id?`<button class="button danger small" data-user-delete="${attr(user.id)}">Delete</button>`:""}</div></td>
+        <td>${isoDateTime(user.last_seen_at||user.last_sign_in_at)}</td><td><div class="table-actions"><button class="button ghost small" data-user-edit="${attr(user.id)}">Edit</button><button class="button secondary small" data-user-reset="${attr(user.id)}">Reset password</button>${user.id!==state.boot.profile.id?`<button class="button danger small" data-user-delete="${attr(user.id)}">Delete</button>`:""}</div></td>
       </tr>`).join("")}</tbody></table></div>`:`<div class="empty"><strong>No users found</strong></div>`;
     $$("[data-user-edit]",root).forEach(button=>button.onclick=()=>openUserEditor(button.dataset.userEdit));
+    $$("[data-user-reset]",root).forEach(button=>button.onclick=()=>openPasswordReset(button.dataset.userReset));
     $$("[data-user-delete]",root).forEach(button=>button.onclick=()=>deleteUserAccount(button.dataset.userDelete));
   }
   const NIP_EMAIL_TITLES=new Set(["mr","mrs","ms","miss","madam","master","dr","doctor","rev","reverend","prof","professor","principal","headmaster","headmistress"]);
@@ -2078,7 +2176,7 @@
   }
 
   function openUserEditor(id=null) {
-    const user=id?(state.userAdmin.profiles||[]).find(x=>x.id===id):{role:"parent_guardian",active:true,mfa_required:false,access:[]};if(!user)return;
+    const user=id?(state.userAdmin.profiles||[]).find(x=>x.id===id):{role:"parent_guardian",active:true,mfa_required:false,must_change_password:false,access:[]};if(!user)return;
     const initialEmail=id?(user.email||generatedNipEmail(user.full_name||"")):generatedNipEmail(user.full_name||"");
     state.userAccessRows=(user.access||[]).map(x=>({...x}));
     modal(id?"Edit User Account":"Create User Account",user.email||"",`<form id="userForm" class="form-stack">
@@ -2093,8 +2191,9 @@
         <label class="field full"><span>${id?"New password":"Password"}</span><div class="password-wrap"><input id="adminUserPassword" name="password" type="password" autocomplete="new-password" ${id?"":"required"}><button id="generateUserPassword" class="button ghost small" type="button">Generate</button></div></label>
         <label class="check-field"><input name="active" type="checkbox" ${user.active!==false?"checked":""}><span>Active account</span></label>
         <label class="check-field"><input name="mfa_required" type="checkbox" ${user.mfa_required?"checked":""}><span>Require multi-factor authentication</span></label>
+        <label class="check-field full"><input name="must_change_password" type="checkbox" ${user.must_change_password?"checked":""}><span>Force password change on next login</span></label>
       </div>
-      <div id="userAccessSection"><div class="section-title"><h4>Delegated Class Access</h4><button class="button secondary small" id="userAccessAdd" type="button">Add access</button></div><div id="userAccessRows"></div></div>
+      <div id="userAccessSection"><div class="section-title"><div><h4>Delegated Class Access</h4><p class="help-text">Check the exact classes and subjects available in the teacher portal.</p></div></div><div id="userAccessRows"></div></div>
     </form>`,`<button class="button ghost" id="userCancel" type="button">Cancel</button><button class="button primary" id="userSave" type="button">${id?"Save account":"Create account"}</button>`,"wide");
     renderUserAccessRows();
     renderUserStaffSelector(id||"",user.headteacher_id||user.teacher_id||"");
@@ -2104,10 +2203,11 @@
     byId("generateUserPassword").onclick=()=>{const password=generateSecurePassword();byId("adminUserPassword").value=password;byId("adminUserPassword").type="text"};
     byId("userRoleSelect").onchange=()=>{
       const selected=byId("userRoleSelect").value;
-      state.userAccessRows=state.userAccessRows.map(row=>selected==="subject_teacher"?{...row,access_level:row.access_level==="view"?"score":row.access_level}:{...row,access_level:selected==="class_teacher"&&row.access_level==="view"?"edit":row.access_level});
+      state.userAccessRows=state.userAccessRows
+        .filter(row=>selected!=="subject_teacher"||row.subject_id)
+        .map(row=>({...row,access_level:row.subject_id?"score":"edit"}));
       renderUserAccessRows();renderUserStaffSelector(id||"","");
     };
-    byId("userAccessAdd").onclick=()=>{const selected=byId("userRoleSelect").value;state.userAccessRows.push({class_id:"",subject_id:"",access_level:selected==="subject_teacher"?"score":selected==="class_teacher"?"edit":"view"});renderUserAccessRows()};
     byId("userCancel").onclick=closeModal;
     byId("userSave").onclick=()=>saveUserAccount(id);
   }
@@ -2144,20 +2244,49 @@
     for(let i=chars.length-1;i>0;i--){const j=values[i]% (i+1);[chars[i],chars[j]]=[chars[j],chars[i]]}
     return chars.join("");
   }
+  function userAccessKey(classId,subjectId){return `${classId}|${subjectId||"*"}`}
   function renderUserAccessRows() {
-    const root=byId("userAccessRows"),section=byId("userAccessSection");if(!root)return;const teacherRole=["class_teacher","subject_teacher"].includes(byId("userRoleSelect")?.value);if(section)section.classList.toggle("hidden",!teacherRole);if(!teacherRole){state.userAccessRows=[];root.innerHTML="";return;}
-    root.innerHTML=state.userAccessRows.length?state.userAccessRows.map((row,index)=>{const assignedIds=new Set((state.userAdmin.class_subjects||[]).filter(item=>item.class_id===row.class_id&&item.active!==false).map(item=>item.subject_id));const choices=(state.userAdmin.subjects||[]).filter(item=>!row.class_id||assignedIds.has(item.id));return `<div class="form-grid three" data-access-index="${index}" style="margin-bottom:10px">
-      <label class="field"><span>Class</span><select data-access-key="class_id">${optionList(state.userAdmin.classes||[],"id","name",row.class_id)}</select></label>
-      <label class="field"><span>Subject</span><select data-access-key="subject_id">${optionList(choices,"id","name",row.subject_id,"All subjects")}</select></label>
-      <div class="button-row"><label class="field" style="flex:1"><span>Access</span><select data-access-key="access_level">
-        ${["view","edit","score","review"].map(v=>`<option value="${v}" ${v===row.access_level?"selected":""}>${v}</option>`).join("")}</select></label>
-        <button class="button danger small" type="button" data-access-remove="${index}">Remove</button></div>
-    </div>`}).join(""):`<div class="empty compact-empty"><strong>No delegated class access</strong></div>`;
-    $$("[data-access-index]",root).forEach(line=>$$("[data-access-key]",line).forEach(input=>input.onchange=()=>{
-      const access=state.userAccessRows[Number(line.dataset.accessIndex)];access[input.dataset.accessKey]=input.value;
-      if(input.dataset.accessKey==="class_id"){access.subject_id="";renderUserAccessRows()}
-    }));
-    $$("[data-access-remove]",root).forEach(button=>button.onclick=()=>{state.userAccessRows.splice(Number(button.dataset.accessRemove),1);renderUserAccessRows()});
+    const root=byId("userAccessRows"),section=byId("userAccessSection");if(!root)return;
+    const roleName=byId("userRoleSelect")?.value||"parent_guardian";
+    const teacherRole=["class_teacher","subject_teacher"].includes(roleName);
+    if(section)section.classList.toggle("hidden",!teacherRole);
+    if(!teacherRole){state.userAccessRows=[];root.innerHTML="";return}
+
+    const classes=state.userAdmin.classes||[],subjects=state.userAdmin.subjects||[];
+    const activeAssignments=(state.userAdmin.class_subjects||[]).filter(item=>item.active!==false);
+    const selected=new Set(state.userAccessRows.map(row=>userAccessKey(row.class_id,row.subject_id)));
+    const selectedCount=selected.size;
+
+    root.innerHTML=`<details class="checklist-dropdown" open>
+      <summary><span>Delegated class and subject checklist</span><strong>${selectedCount?`${selectedCount} selected`:"Select access"}</strong></summary>
+      <div class="checklist-menu">
+        <div class="checklist-toolbar"><span>${roleName==="class_teacher"?"Whole-class access permits class report preparation. Subject checks permit scoring.":"Select each class-subject pair this teacher may score."}</span><button class="button ghost small" id="clearUserAccess" type="button">Clear</button></div>
+        ${classes.map(cls=>{
+          const existingSelected=state.userAccessRows.filter(row=>row.class_id===cls.id&&row.subject_id).map(row=>row.subject_id);
+          const availableIds=new Set(activeAssignments.filter(item=>item.class_id===cls.id).map(item=>item.subject_id));
+          existingSelected.forEach(id=>availableIds.add(id));
+          const availableSubjects=subjects.filter(subject=>availableIds.has(subject.id));
+          if(roleName==="subject_teacher"&&!availableSubjects.length)return "";
+          const classKey=userAccessKey(cls.id,null);
+          return `<section class="checklist-group">
+            <div class="checklist-group-head"><strong>${esc(cls.name)}</strong>${roleName==="class_teacher"?`<label class="check-field compact"><input type="checkbox" data-user-access-pair="${attr(classKey)}" ${selected.has(classKey)?"checked":""}><span>Whole class</span></label>`:""}</div>
+            <div class="checklist-options">${availableSubjects.map(subject=>{
+              const key=userAccessKey(cls.id,subject.id);
+              return `<label class="checklist-option"><input type="checkbox" data-user-access-pair="${attr(key)}" ${selected.has(key)?"checked":""}><span>${esc(subject.name)}</span><small>${esc(subject.code||"")}</small></label>`;
+            }).join("")||`<div class="help-text">Assign subjects to this class under Academics before delegating subject access.</div>`}</div>
+          </section>`;
+        }).join("")}
+      </div>
+    </details>`;
+
+    $$("[data-user-access-pair]",root).forEach(input=>input.onchange=()=>{
+      const [classId,subjectToken]=input.dataset.userAccessPair.split("|");
+      const subjectId=subjectToken==="*"?null:subjectToken;
+      state.userAccessRows=state.userAccessRows.filter(row=>!(row.class_id===classId&&(row.subject_id||null)===subjectId));
+      if(input.checked)state.userAccessRows.push({class_id:classId,subject_id:subjectId,access_level:subjectId?"score":"edit"});
+      renderUserAccessRows();
+    });
+    byId("clearUserAccess").onclick=()=>{state.userAccessRows=[];renderUserAccessRows()};
   }
   async function invokeAdminUserManagement(action,payload) {
     let {data:{session}}=await state.client.auth.getSession();
@@ -2185,11 +2314,36 @@
       if(["principal","class_teacher","subject_teacher"].includes(v.role)&&!v.staff_record_id)throw new Error("Select the corresponding staff record");
       const payload={user_id:userId||undefined,full_name:v.full_name.trim(),email:v.email.trim(),phone:v.phone.trim(),role:v.role,staff_record_id:v.staff_record_id||"",
         password:v.password||"",active:form.elements.active.checked,mfa_required:form.elements.mfa_required.checked,
+        must_change_password:form.elements.must_change_password.checked,
         access:state.userAccessRows.filter(x=>x.class_id),reason:userId?"User account updated":"User account created"};
       await invokeAdminUserManagement(userId?"update":"create",payload);saved=true;state.workspace=null;closeModal();toast(userId?"User account saved":"User account created");
       try{state.userAdmin=await rpc("list_profiles_with_access");state.boot=await rpc("get_bootstrap_data");renderBrand();renderNav();renderUserRows()}
       catch(refreshError){await reportClientError(refreshError,{source:"user_account_save",user_id:userId,stage:"refresh"});toast("Account saved","Reload the page to display the latest access record.","warning",6500)}
     }catch(error){await reportClientError(error,{source:"user_account_save",user_id:userId,stage:saved?"refresh":"record"});toast(saved?"Account saved":"User account not saved",saved?"Reload the page to display the latest access record.":friendlyError(error),saved?"warning":"error",6500)}finally{button.disabled=false;button.textContent=userId?"Save account":"Create account"}
+  }
+
+
+  function openPasswordReset(userId) {
+    const user=(state.userAdmin?.profiles||[]).find(item=>item.id===userId);if(!user)return;
+    const temporary=generateSecurePassword();
+    modal("Reset User Password",user.email||user.full_name||"",`<form id="passwordResetForm" class="form-stack">
+      <label class="field"><span>Temporary password</span><div class="password-wrap"><input name="password" type="text" value="${attr(temporary)}" minlength="8" autocomplete="new-password" required><button class="button ghost small" id="regenerateResetPassword" type="button">Generate</button></div></label>
+      <label class="check-field"><input name="force_password_change" type="checkbox" checked><span>Force password change on next login</span></label>
+      <p class="help-text">Copy and share the temporary password securely with the account owner.</p>
+    </form>`,`<button class="button ghost" id="passwordResetCancel" type="button">Cancel</button><button class="button primary" id="passwordResetSave" type="button">Reset password</button>`,"small");
+    byId("regenerateResetPassword").onclick=()=>{byId("passwordResetForm").elements.password.value=generateSecurePassword()};
+    byId("passwordResetCancel").onclick=closeModal;
+    byId("passwordResetSave").onclick=async()=>{
+      const form=byId("passwordResetForm"),button=byId("passwordResetSave");if(!form?.reportValidity())return;
+      button.disabled=true;button.textContent="Resetting";
+      try{
+        await invokeAdminUserManagement("reset_password",{user_id:userId,password:form.elements.password.value,
+          force_password_change:form.elements.force_password_change.checked,reason:"Password reset by the System Administrator"});
+        closeModal();toast("Password reset",form.elements.force_password_change.checked?"The user must change it at the next login.":"The temporary password is active.");
+        state.userAdmin=await rpc("list_profiles_with_access");renderUserRows();
+      }catch(error){toast("Password not reset",friendlyError(error),"error",6500)}
+      finally{button.disabled=false;button.textContent="Reset password"}
+    };
   }
 
   async function deleteUserAccount(userId) {
