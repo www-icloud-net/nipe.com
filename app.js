@@ -1053,8 +1053,107 @@
         </tbody></table></div></section>
     </div>`;
   }
+  function classSubjectAssignmentGroups(assignments=[]) {
+    const groups=new Map();
+    assignments.forEach(row=>{
+      const key=row.teacher_id||"__unassigned__";
+      if(!groups.has(key)){
+        groups.set(key,{
+          key,
+          teacher_id:row.teacher_id||null,
+          teacher_name:row.teacher_name||"Unassigned",
+          rows:[],
+          classes:new Map(),
+          subjects:new Map(),
+          active_count:0,
+          inactive_count:0
+        });
+      }
+      const group=groups.get(key);
+      group.rows.push(row);
+      if(row.class_id||row.class_name)group.classes.set(row.class_id||row.class_name,row.class_name||"Class");
+      if(row.subject_id||row.subject_name)group.subjects.set(row.subject_id||row.subject_name,row.subject_name||"Subject");
+      if(row.active)group.active_count+=1;else group.inactive_count+=1;
+    });
+    return [...groups.values()].sort((a,b)=>
+      String(a.teacher_name).localeCompare(String(b.teacher_name),undefined,{sensitivity:"base"})
+    );
+  }
+
+  function assignmentCountText(count,singular,plural=`${singular}s`) {
+    return `${count} ${count===1?singular:plural}`;
+  }
+
+  function assignmentNamesPreview(values,limit=3) {
+    const names=[...values.values()];
+    if(!names.length)return "—";
+    if(names.length<=limit)return names.join(", ");
+    return `${names.slice(0,limit).join(", ")} +${names.length-limit}`;
+  }
+
+  function openAssignmentGroupManager(groupKey) {
+    const group=classSubjectAssignmentGroups(state.academic?.class_subjects||[])
+      .find(item=>item.key===groupKey);
+    if(!group)return;
+    const rows=[...group.rows].sort((a,b)=>
+      String(a.class_name||"").localeCompare(String(b.class_name||""),undefined,{numeric:true,sensitivity:"base"})||
+      String(a.subject_name||"").localeCompare(String(b.subject_name||""),undefined,{sensitivity:"base"})
+    );
+    modal("Manage Teacher Assignments",group.teacher_name,`
+      <div class="assignment-group-summary">
+        <div><span>Teacher</span><strong>${esc(group.teacher_name)}</strong></div>
+        <div><span>Classes</span><strong>${assignmentCountText(group.classes.size,"class","classes")}</strong></div>
+        <div><span>Subjects</span><strong>${assignmentCountText(group.subjects.size,"subject")}</strong></div>
+        <div><span>Assignments</span><strong>${assignmentCountText(group.rows.length,"assignment")}</strong></div>
+      </div>
+      <div class="assignment-detail-meta">
+        <div><span>Classes:</span> ${esc([...group.classes.values()].join(", ")||"—")}</div>
+        <div><span>Subjects:</span> ${esc([...group.subjects.values()].join(", ")||"—")}</div>
+      </div>
+      <div class="table-wrap assignment-detail-table"><table>
+        <thead><tr><th>Class</th><th>Subject</th><th>Status</th><th></th></tr></thead>
+        <tbody>${rows.map(row=>`<tr>
+          <td>${esc(row.class_name||"—")}</td>
+          <td>${esc(row.subject_name||"—")}</td>
+          <td>${row.active?`<span class="status published">Active</span>`:`<span class="status withdrawn">Inactive</span>`}</td>
+          <td><div class="table-actions">
+            <button class="button ghost small" data-group-edit-assignment="${attr(row.id)}">Edit</button>
+            ${row.active
+              ?`<button class="button danger small" data-group-remove-assignment="${attr(row.id)}">Remove</button>`
+              :`<button class="button danger small" data-group-delete-assignment="${attr(row.id)}">Delete</button>`}
+          </div></td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+    `,`<button class="button ghost" id="assignmentGroupClose" type="button">Close</button>
+       ${group.teacher_id?`<button class="button primary" id="assignmentGroupAdd" type="button">Assign more</button>`:""}`,"wide");
+    byId("assignmentGroupClose").onclick=closeModal;
+    if(byId("assignmentGroupAdd"))byId("assignmentGroupAdd").onclick=()=>{
+      const teacherId=group.teacher_id;
+      closeModal();
+      openAssignmentEditor(null,teacherId);
+    };
+    $$("[data-group-edit-assignment]").forEach(button=>button.onclick=()=>{
+      const id=button.dataset.groupEditAssignment;
+      closeModal();
+      openAssignmentEditor(id);
+    });
+    $$("[data-group-remove-assignment]").forEach(button=>button.onclick=()=>{
+      const id=button.dataset.groupRemoveAssignment;
+      closeModal();
+      removeAcademicEntity("assignment",id);
+    });
+    $$("[data-group-delete-assignment]").forEach(button=>button.onclick=()=>{
+      const id=button.dataset.groupDeleteAssignment;
+      closeModal();
+      deleteClassSubjectAssignment(id);
+    });
+  }
+
   function renderClassesTab() {
     const classes=state.academic.classes||[],subjects=state.academic.subjects||[],assignments=state.academic.class_subjects||[];
+    const assignmentGroups=classSubjectAssignmentGroups(assignments);
+    const activeAssignments=assignments.filter(item=>item.active).length;
+    const activeTeachers=assignmentGroups.filter(group=>group.active_count>0).length;
     return `<div class="grid two">
       <section class="panel"><div class="panel-header"><div><h3>Classes</h3><p>${classes.length} configured</p></div><button class="button primary small" id="addClass">Add class</button></div>
         <div class="table-wrap"><table><thead><tr><th>Class</th><th>Level</th><th>Class Teacher</th><th></th></tr></thead><tbody>
@@ -1067,12 +1166,20 @@
           ${subjects.map(row=>`<tr><td><strong>${esc(row.code)}</strong></td><td>${esc(row.name)}</td><td>${number(row.display_order)}</td>
             <td><div class="table-actions"><button class="button ghost small" data-edit-subject="${row.id}">Edit</button><button class="button danger small" data-remove-subject="${row.id}">Remove</button></div></td></tr>`).join("")}
         </tbody></table></div></section>
-      <section class="panel" style="grid-column:1/-1"><div class="panel-header"><div><h3>Class Subject Assignments</h3><p>${assignments.filter(x=>x.active).length} active assignments</p></div>
+      <section class="panel" style="grid-column:1/-1"><div class="panel-header"><div><h3>Class Subject Assignments</h3><p>${activeAssignments} active assignments across ${assignmentCountText(activeTeachers,"teacher")}</p></div>
         <button class="button primary small" id="addAssignment">Assign subject</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Class</th><th>Subject</th><th>Teacher</th><th>Status</th><th></th></tr></thead><tbody>
-          ${assignments.map(row=>`<tr><td>${esc(row.class_name)}</td><td>${esc(row.subject_name)}</td><td>${esc(row.teacher_name||"—")}</td>
-            <td>${row.active?`<span class="status published">Active</span>`:`<span class="status withdrawn">Inactive</span>`}</td>
-            <td><div class="table-actions"><button class="button ghost small" data-edit-assignment="${row.id}">Edit</button>${row.active?`<button class="button danger small" data-remove-assignment="${row.id}">Remove</button>`:`<button class="button danger small" data-delete-assignment="${row.id}">Delete</button>`}</div></td></tr>`).join("")}
+        <div class="table-wrap"><table class="compact-assignment-table"><thead><tr><th>Teacher</th><th>Classes</th><th>Subjects</th><th>Assignments</th><th>Status</th><th></th></tr></thead><tbody>
+          ${assignmentGroups.length?assignmentGroups.map(group=>`<tr>
+            <td><div class="cell-copy"><strong>${esc(group.teacher_name)}</strong><small>${group.teacher_id?"Assigned teacher":"No teacher selected"}</small></div></td>
+            <td><div class="assignment-count"><strong>${assignmentCountText(group.classes.size,"class","classes")}</strong><small title="${attr([...group.classes.values()].join(", "))}">${esc(assignmentNamesPreview(group.classes))}</small></div></td>
+            <td><div class="assignment-count"><strong>${assignmentCountText(group.subjects.size,"subject")}</strong><small title="${attr([...group.subjects.values()].join(", "))}">${esc(assignmentNamesPreview(group.subjects))}</small></div></td>
+            <td><strong>${group.rows.length}</strong></td>
+            <td><div class="assignment-status-stack">
+              ${group.active_count?`<span class="status published">${group.active_count} active</span>`:""}
+              ${group.inactive_count?`<span class="status withdrawn">${group.inactive_count} inactive</span>`:""}
+            </div></td>
+            <td><button class="button ghost small" data-manage-assignment-group="${attr(group.key)}">Manage</button></td>
+          </tr>`).join(""):`<tr><td colspan="6"><div class="empty">No class-subject assignments configured</div></td></tr>`}
         </tbody></table></div></section>
     </div>`;
   }
@@ -1144,9 +1251,7 @@
     $$("[data-edit-subject]").forEach(b=>b.onclick=()=>openSubjectEditor(b.dataset.editSubject));
     $$("[data-remove-subject]").forEach(b=>b.onclick=()=>removeAcademicEntity("subject",b.dataset.removeSubject));
     byId("addAssignment")?.addEventListener("click",()=>openAssignmentEditor());
-    $$("[data-edit-assignment]").forEach(b=>b.onclick=()=>openAssignmentEditor(b.dataset.editAssignment));
-    $$("[data-remove-assignment]").forEach(b=>b.onclick=()=>removeAcademicEntity("assignment",b.dataset.removeAssignment));
-    $$("[data-delete-assignment]").forEach(b=>b.onclick=()=>deleteClassSubjectAssignment(b.dataset.deleteAssignment));
+    $$("[data-manage-assignment-group]").forEach(button=>button.onclick=()=>openAssignmentGroupManager(button.dataset.manageAssignmentGroup));
     byId("addScheme")?.addEventListener("click",()=>openSchemeEditor());
     $$("[data-edit-scheme]").forEach(b=>b.onclick=()=>openSchemeEditor(b.dataset.editScheme));
     byId("addGrade")?.addEventListener("click",()=>openGradeEditor());
@@ -1313,13 +1418,13 @@
       :"Select one or more classes and one or more subjects.";
   }
 
-  function openAssignmentEditor(id=null) {
+  function openAssignmentEditor(id=null,teacherId="") {
     const row=(state.academic.class_subjects||[]).find(x=>x.id===id)||{};
     const teacherProfiles=(state.academic.profiles||[]).filter(profile=>["class_teacher","subject_teacher"].includes(profile.role));
     state.assignmentClassSelections=new Set(row.class_id?[row.class_id]:[]);
     state.assignmentSubjectSelections=new Set(row.subject_id?[row.subject_id]:[]);
     modal(id?"Edit Subject Assignment":"Assign Subjects","Select one or more classes and subjects for the selected teacher.",`<form id="entityForm" class="form-stack">
-      <label class="field"><span>Teacher</span><select name="teacher_id" required>${optionList(teacherProfiles,"id","full_name",row.teacher_id,"Select teacher")}</select></label>
+      <label class="field"><span>Teacher</span><select name="teacher_id" required>${optionList(teacherProfiles,"id","full_name",row.teacher_id||teacherId,"Select teacher")}</select></label>
       <div class="independent-check-grid">
         <div id="assignmentClassDropdown"></div>
         <div id="assignmentSubjectDropdown"></div>

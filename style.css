@@ -438,3 +438,97 @@ td{font-size:13px}
   }
   .vertical-check-option strong{font-size:15px}
 }
+
+
+/* Enterprise v6.5.7 compact teacher assignment summary */
+.compact-assignment-table td{
+  padding-top:10px;
+  padding-bottom:10px;
+  vertical-align:middle;
+}
+.compact-assignment-table th:nth-child(1){width:28%}
+.compact-assignment-table th:nth-child(2),
+.compact-assignment-table th:nth-child(3){width:20%}
+.compact-assignment-table th:nth-child(4){width:10%}
+.compact-assignment-table th:nth-child(5){width:14%}
+.assignment-count{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  min-width:0;
+}
+.assignment-count strong{
+  color:#183153;
+  font-size:13px;
+}
+.assignment-count small{
+  display:block;
+  max-width:240px;
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+  color:var(--muted);
+}
+.assignment-status-stack{
+  display:flex;
+  flex-wrap:wrap;
+  gap:5px;
+}
+.assignment-group-summary{
+  display:grid;
+  grid-template-columns:2fr repeat(3,1fr);
+  gap:10px;
+  margin-bottom:12px;
+}
+.assignment-group-summary>div{
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:11px 13px;
+  background:#f8fbff;
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+}
+.assignment-group-summary span{
+  color:var(--muted);
+  font-size:10px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+}
+.assignment-group-summary strong{
+  color:#183153;
+  font-size:14px;
+}
+.assignment-detail-meta{
+  display:grid;
+  gap:5px;
+  margin-bottom:12px;
+  padding:10px 12px;
+  border-radius:10px;
+  background:#f7f9fc;
+  color:var(--muted);
+  font-size:12px;
+}
+.assignment-detail-meta span{
+  color:#253957;
+  font-weight:800;
+}
+.assignment-detail-table{
+  max-height:52vh;
+  overflow:auto;
+}
+.assignment-detail-table table{
+  min-width:650px;
+}
+@media(max-width:760px){
+  .compact-assignment-table{
+    min-width:780px;
+  }
+  .assignment-group-summary{
+    grid-template-columns:1fr 1fr;
+  }
+  .assignment-group-summary>div:first-child{
+    grid-column:1/-1;
+  }
+}
