@@ -167,6 +167,8 @@
     const msg=error?.message||String(error||"Operation failed");
     if(msg.includes("40001")||msg.includes("changed by another user")) return "Another user changed this record. The latest version has been loaded.";
     if(msg.includes("42501")||msg.toLowerCase().includes("access denied")) return "You do not have permission to complete this operation.";
+    if(msg.includes("student_reports_enrollment_id_key")||msg.includes("student_reports_enrollment_id_term_id_key")) return "The database still has a legacy report uniqueness rule. Apply the v6.6.1 database hotfix, then save the report again.";
+    if(error?.code==="23505"&&msg.toLowerCase().includes("student_reports")) return "A current report already exists for this student and term.";
     if(msg.toLowerCase().includes("failed to fetch")||msg.toLowerCase().includes("network")) return "The server could not be reached.";
     return msg;
   }
@@ -2138,13 +2140,9 @@
     ]));
   }
 
-  async function resolveReportImageAssets({student={},reportId=null,manual=false}={}) {
+  async function resolveReportImageAssets({reportId=null,manual=false}={}) {
     const school=state.boot.school||{};
     const logo=await loadImage(school.logo_url?.startsWith("http")?school.logo_url:CONFIG.logoPath).catch(()=>null);
-    let studentImage=null;
-    if(!manual&&student.photo_url){
-      try{studentImage=await loadImage(await signedUrl(CONFIG.photoBucket,student.photo_url,900))}catch(_){studentImage=null}
-    }
     const signer=manual
       ?await rpc("get_current_principal_signature").catch(()=>({full_name:school.head_name||"Principal",signature_path:""}))
       :reportId
@@ -2154,7 +2152,74 @@
     if(signer.signature_path){
       try{signatureImage=await loadImage(await signedUrl(CONFIG.signatureBucket,signer.signature_path,900))}catch(_){signatureImage=null}
     }
-    return {logo,studentImage,signer,signatureImage};
+    return {logo,signer,signatureImage};
+  }
+
+  function reportTextLines(ctx,text,maxWidth,maxLines=3) {
+    const words=String(text||"").trim().split(/\s+/).filter(Boolean),lines=[];
+    let line="";
+    for(const word of words){
+      const test=line?`${line} ${word}`:word;
+      if(line&&ctx.measureText(test).width>maxWidth){lines.push(line);line=word;if(lines.length>=maxLines)break}
+      else line=test;
+    }
+    if(line&&lines.length<maxLines)lines.push(line);
+    return lines;
+  }
+
+  function drawReportWrappedCell(ctx,text,x1,x2,y1,y2,{preferredSize=20,minimumSize=13,weight="normal",colour="#17233b",maxLines=2}={}) {
+    const value=String(text??"");
+    let size=preferredSize,lines=[];
+    while(size>=minimumSize){
+      setReportFont(ctx,size,weight);
+      lines=reportTextLines(ctx,value,Math.max(10,x2-x1-16),maxLines);
+      if(lines.every(line=>ctx.measureText(line).width<=x2-x1-16))break;
+      size-=1;
+    }
+    ctx.fillStyle=colour;ctx.textBaseline="middle";
+    const lineHeight=size*1.08,totalHeight=lineHeight*lines.length;
+    let y=y1+(y2-y1-totalHeight)/2+lineHeight/2;
+    lines.forEach(line=>{ctx.fillText(line,x1+8,y);y+=lineHeight});
+    ctx.textBaseline="alphabetic";
+  }
+
+  function drawReportDottedLine(ctx,x1,x2,y) {
+    ctx.save();ctx.strokeStyle="#17233b";ctx.lineWidth=1.25;ctx.setLineDash([2,5]);
+    ctx.beginPath();ctx.moveTo(x1,y);ctx.lineTo(x2,y);ctx.stroke();ctx.restore();
+  }
+
+  function reportDate(value) {
+    const date=value?new Date(value):new Date();
+    if(Number.isNaN(date.getTime()))return "";
+    return date.toLocaleDateString("en-GB",{day:"2-digit",month:"2-digit",year:"numeric"});
+  }
+
+  function reportYearDigits(value) {
+    const digits=String(value||"").replace(/\D/g,"");
+    return digits.length>=8?digits.slice(0,8):digits||"20252026";
+  }
+
+  function reportVerificationCode(report={},templateMeta={},manual=false) {
+    if(!manual&&report.report_number)return String(report.report_number);
+    return `NIS-${reportYearDigits(templateMeta.academicYearName)}-00000`;
+  }
+
+  function drawInlineReportField(ctx,{label,value,x,y,maxWidth=500,align="left",fontSize=20,minimumSize=13}) {
+    const labelText=String(label||""),valueText=String(value??"");
+    let size=fontSize,labelWidth=0,valueWidth=0;
+    while(size>=minimumSize){
+      setReportFont(ctx,size,"bold");labelWidth=ctx.measureText(labelText).width;
+      setReportFont(ctx,size,"normal");valueWidth=ctx.measureText(valueText).width;
+      if(labelWidth+7+valueWidth<=maxWidth||size===minimumSize)break;
+      size-=1;
+    }
+    const total=labelWidth+7+valueWidth;
+    let start=x;
+    if(align==="right")start=x-total;
+    else if(align==="center")start=x-total/2;
+    ctx.fillStyle="#17233b";
+    setReportFont(ctx,size,"bold");ctx.fillText(labelText,start,y);
+    setReportFont(ctx,size,"normal");ctx.fillText(valueText,start+labelWidth+7,y);
   }
 
   async function drawPreferredTerminalReport({
@@ -2163,202 +2228,160 @@
     const canvas=document.createElement("canvas");
     canvas.width=1240;canvas.height=1754;
     const ctx=canvas.getContext("2d"),school=state.boot.school||{};
-    const navy=school.primary_colour||"#153f7c";
-    const accent=school.accent_colour||"#ef7f2c";
-    const pale="#eaf2fc";
-    const line="#afc2dc";
-    const {logo,studentImage,signer={},signatureImage}=assets;
+    const navy="#123a79",accent="#f79646",headerPale="#dce8f6",summaryPale="#eef4fb",ink="#17233b";
+    const {logo,signer={},signatureImage}=assets;
 
     ctx.fillStyle="#ffffff";ctx.fillRect(0,0,canvas.width,canvas.height);
 
-    // Professional double security border.
-    ctx.strokeStyle="#182c4c";ctx.lineWidth=7;ctx.strokeRect(12,12,1216,1730);
-    ctx.strokeStyle="#647b9c";ctx.lineWidth=2;ctx.strokeRect(28,28,1184,1698);
-
-    // Header.
-    ctx.fillStyle=navy;ctx.fillRect(40,42,1160,205);
-    if(logo)drawImageContain(ctx,logo,62,65,145,145);
+    // Header, proportioned to the approved Nipe terminal-report template.
+    ctx.fillStyle=navy;ctx.fillRect(38,29,1164,199);
+    if(logo)drawImageContain(ctx,logo,57,58,140,145);
     ctx.fillStyle="#ffffff";
-    setReportFont(ctx,38,"bold");
-    drawCenteredReportText(ctx,(school.school_name||"NIPE INTERNATIONAL SCHOOL").toUpperCase(),220,1020,92);
-    setReportFont(ctx,17,"normal");
-    drawCenteredReportText(ctx,school.motto||"Discipline, Commitment, Excellence",220,1020,124);
-    const contact=[school.address,school.phone,school.email].filter(Boolean).join("  |  ");
-    setReportFont(ctx,15,"normal");
-    drawCenteredReportText(ctx,contact,220,1020,151);
-    setReportFont(ctx,25,"bold");
-    drawCenteredReportText(ctx,manual?"STUDENT TERMINAL REPORT - MANUAL TEMPLATE":school.report_title||"STUDENT TERMINAL REPORT",220,1020,202);
+    const schoolName=(school.school_name||"NIPE INTERNATIONAL SCHOOL").toUpperCase();
+    const titleSize=fitReportText(ctx,schoolName,930,36,27,"bold");
+    setReportFont(ctx,titleSize,"bold");drawCenteredReportText(ctx,schoolName,205,1202,79);
+    setReportFont(ctx,16,"normal");drawCenteredReportText(ctx,school.motto||"Discipline, Commitment, Excellence",205,1202,108);
+    drawCenteredReportText(ctx,school.address||"Santeo, Cedar Estate",205,1202,132);
+    drawCenteredReportText(ctx,school.phone||"(+233) 559671336 / (+233) 241397124",205,1202,156);
+    setReportFont(ctx,27,"bold");drawCenteredReportText(ctx,school.report_title||"Student Terminal Report",205,1202,209);
 
-    // Student photograph or manual photo box.
-    ctx.fillStyle="#ffffff";ctx.fillRect(1035,62,135,160);
-    ctx.strokeStyle="#ffffff";ctx.lineWidth=3;ctx.strokeRect(1035,62,135,160);
-    if(studentImage)drawImageContain(ctx,studentImage,1039,66,127,152);
-    else{
-      ctx.fillStyle="#e9eef5";ctx.fillRect(1039,66,127,152);
-      ctx.fillStyle="#51627b";setReportFont(ctx,14,"bold");
-      drawCenteredReportText(ctx,manual?"STUDENT PHOTO":"NO PHOTO",1039,1166,147);
-    }
+    const identityName=manual?"....................................................................":student.full_name||"";
+    const identityAdmission=manual?"NIS.......":student.admission_no||"";
+    const identityClass=manual?(templateMeta.className||"Basic ........."):student.class_name||"";
+    const identityYear=manual?(templateMeta.academicYearName||"................."):student.academic_year_name||"";
+    const identityTerm=manual?(templateMeta.termName||"........"):student.term_name||"";
+    drawInlineReportField(ctx,{label:"Name:",value:identityName,x:43,y:268,maxWidth:650,fontSize:19});
+    drawInlineReportField(ctx,{label:"Admission No.:",value:identityAdmission,x:1197,y:268,maxWidth:390,align:"right",fontSize:19});
+    drawInlineReportField(ctx,{label:"Class:",value:identityClass,x:43,y:323,maxWidth:360,fontSize:19});
+    drawInlineReportField(ctx,{label:"Academic Year:",value:identityYear,x:620,y:323,maxWidth:410,align:"center",fontSize:19});
+    drawInlineReportField(ctx,{label:"Term:",value:identityTerm,x:1197,y:323,maxWidth:300,align:"right",fontSize:19});
 
-    // Student identity.
-    ctx.fillStyle="#172238";setReportFont(ctx,21,"bold");
-    ctx.fillText(`Name: ${manual?"________________________________________":student.full_name||""}`,42,286);
-    drawRightReportText(ctx,`Admission No.: ${manual?"________________":student.admission_no||""}`,1197,286);
-    setReportFont(ctx,20,"bold");
-    ctx.fillText(`Class: ${manual?(templateMeta.className||"________________"):student.class_name||""}`,42,333);
-    drawCenteredReportText(ctx,`Academic Year: ${manual?(templateMeta.academicYearName||"____________"):student.academic_year_name||""}`,370,870,333);
-    drawRightReportText(ctx,`Term: ${manual?(templateMeta.termName||"________"):student.term_name||""}`,1197,333);
-
-    // Watermark behind the results table.
-    if(logo){
-      ctx.save();ctx.globalAlpha=.075;drawImageContain(ctx,logo,405,590,430,430);ctx.restore();
-    }
-
-    const tableTop=360;
-    const headerHeight=48;
-    const minimumRows=15;
-    const rowCount=Math.max(subjects.length,minimumRows);
-    const availableRowsHeight=760;
-    const rowHeight=Math.max(30,Math.min(48,Math.floor(availableRowsHeight/Math.max(rowCount,1))));
-    const tableBottom=tableTop+headerHeight+rowHeight*rowCount;
-    const columns=[40,285,465,645,795,895,1015,1200];
+    const tableLeft=38,tableRight=1202,tableTop=338,headerHeight=58,tableBottom=1086;
+    const columns=[38,286,464,646,762,862,994,1202];
     const labels=["SUBJECT","CLASS SCORE","EXAMS SCORE","TOTAL","GRADE","POSITION","REMARKS"];
+    const minimumRows=12,rowCount=Math.max(minimumRows,subjects.length),displaySubjects=Array.from({length:rowCount},(_,index)=>subjects[index]||null);
 
-    ctx.fillStyle=pale;ctx.fillRect(40,tableTop,1160,headerHeight);
-    ctx.strokeStyle=line;ctx.lineWidth=1.2;ctx.strokeRect(40,tableTop,1160,headerHeight+rowHeight*rowCount);
-    columns.forEach(x=>{ctx.beginPath();ctx.moveTo(x,tableTop);ctx.lineTo(x,tableBottom);ctx.stroke()});
-    setReportFont(ctx,17,"bold");ctx.fillStyle="#102850";
-    labels.forEach((label,index)=>drawCenteredReportText(ctx,label,columns[index],columns[index+1],tableTop+31));
+    // Watermark remains behind the table only.
+    if(logo){ctx.save();ctx.globalAlpha=.065;drawImageContain(ctx,logo,420,548,400,430);ctx.restore()}
 
+    ctx.fillStyle=headerPale;ctx.fillRect(tableLeft,tableTop,tableRight-tableLeft,headerHeight);
+    ctx.strokeStyle="#1d1d1d";ctx.lineWidth=1.25;ctx.strokeRect(tableLeft,tableTop,tableRight-tableLeft,tableBottom-tableTop);
+    columns.slice(1,-1).forEach(x=>{ctx.beginPath();ctx.moveTo(x,tableTop);ctx.lineTo(x,tableBottom);ctx.stroke()});
+    setReportFont(ctx,19,"bold");ctx.fillStyle=ink;ctx.textBaseline="middle";
+    labels.forEach((label,index)=>drawCenteredReportText(ctx,label,columns[index],columns[index+1],tableTop+headerHeight/2+1));
+    ctx.textBaseline="alphabetic";
+
+    setReportFont(ctx,20,"normal");
+    const subjectWidths=displaySubjects.map(subject=>subject?reportTextLines(ctx,subject.subject_name||subject.name||"",columns[1]-columns[0]-16,2).length:1);
+    const weights=subjectWidths.map(lines=>lines>1?1.34:1);
+    const availableHeight=tableBottom-(tableTop+headerHeight),weightTotal=weights.reduce((sum,value)=>sum+value,0);
+    let rowY=tableTop+headerHeight;
     const ranks=manual?new Map():reportSubjectRanks(subjects);
-    for(let index=0;index<rowCount;index++){
-      const rowY=tableTop+headerHeight+rowHeight*index;
-      ctx.strokeStyle=line;ctx.beginPath();ctx.moveTo(40,rowY+rowHeight);ctx.lineTo(1200,rowY+rowHeight);ctx.stroke();
-      if(index%2===1){ctx.fillStyle="rgba(234,242,252,.18)";ctx.fillRect(40,rowY,1160,rowHeight)}
-      const subject=subjects[index];
-      if(!subject)continue;
-      const centre=rowY+rowHeight/2;
-      const breakdown=manual?{classScore:null,examScore:null,total:null}:subjectScoreBreakdown(subject);
-      const score=value=>value===null||value===undefined?"":number(value,1);
-      drawReportCellText(ctx,subject.subject_name||subject.name||"",columns[0],columns[1],centre,{preferredSize:20,minimumSize:13});
-      drawReportCellText(ctx,score(breakdown.classScore),columns[1],columns[2],centre,{align:"center",preferredSize:20});
-      drawReportCellText(ctx,score(breakdown.examScore),columns[2],columns[3],centre,{align:"center",preferredSize:20});
-      drawReportCellText(ctx,score(breakdown.total),columns[3],columns[4],centre,{align:"center",preferredSize:20,weight:"bold",colour:manual?"#172238":"#d61f26"});
-      drawReportCellText(ctx,manual?"":subject.grade||"",columns[4],columns[5],centre,{align:"center",preferredSize:20,weight:"bold",colour:"#139a6a"});
-      drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id||subject.subject_name)||"",columns[5],columns[6],centre,{align:"center",preferredSize:19,colour:"#d61f26"});
-      drawReportCellText(ctx,manual?"":subject.remark||"",columns[6],columns[7],centre,{preferredSize:18,minimumSize:12});
-    }
+    displaySubjects.forEach((subject,index)=>{
+      const rowHeight=index===displaySubjects.length-1?tableBottom-rowY:availableHeight*(weights[index]/weightTotal);
+      const nextY=rowY+rowHeight;
+      ctx.strokeStyle="#1d1d1d";ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(tableLeft,nextY);ctx.lineTo(tableRight,nextY);ctx.stroke();
+      if(subject){
+        const breakdown=manual?{classScore:null,examScore:null,total:null}:subjectScoreBreakdown(subject);
+        const score=value=>value===null||value===undefined?"":number(value,1);
+        drawReportWrappedCell(ctx,subject.subject_name||subject.name||"",columns[0],columns[1],rowY,nextY,{preferredSize:20,minimumSize:13,maxLines:2});
+        drawReportCellText(ctx,score(breakdown.classScore),columns[1],columns[2],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,colour:ink});
+        drawReportCellText(ctx,score(breakdown.examScore),columns[2],columns[3],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,colour:ink});
+        drawReportCellText(ctx,score(breakdown.total),columns[3],columns[4],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:ink});
+        drawReportCellText(ctx,manual?"":subject.grade||"",columns[4],columns[5],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:ink});
+        drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id||subject.subject_name)||"",columns[5],columns[6],(rowY+nextY)/2,{align:"center",preferredSize:18,minimumSize:12,colour:ink});
+        drawReportCellText(ctx,manual?"":subject.remark||"",columns[6],columns[7],(rowY+nextY)/2,{preferredSize:18,minimumSize:11,colour:ink});
+      }
+      rowY=nextY;
+    });
 
-    // Summary.
-    const summaryTop=tableBottom;
-    ctx.fillStyle=pale;ctx.fillRect(40,summaryTop,1160,112);
-    ctx.strokeStyle=line;ctx.strokeRect(40,summaryTop,1160,112);
+    // Summary fields.
+    ctx.fillStyle=summaryPale;ctx.fillRect(tableLeft,tableBottom,tableRight-tableLeft,109);
     const average=manual?"":subjects.length?subjects.reduce((sum,item)=>sum+Number(item.total_score||0),0)/subjects.length:0;
     const position=manual?{position:0,class_size:0}:report.id
       ?await rpc("report_position",{target_report_id:report.id}).catch(()=>({position:0,class_size:0}))
       :{position:0,class_size:0};
-    ctx.fillStyle="#172238";setReportFont(ctx,20,"bold");
-    ctx.fillText(`Average: ${manual?"____________":`${number(average,1)}%`}`,48,summaryTop+31);
-    drawCenteredReportText(ctx,`Attendance: ${manual?"______ / ______":`${report.days_present||0} / ${report.days_school_opened||0}`}`,360,850,summaryTop+31);
-    drawRightReportText(ctx,`Overall Position: ${manual?"______ / ______":position.position?`${position.position} / ${position.class_size}`:"—"}`,1192,summaryTop+31);
-    setReportFont(ctx,18,"bold");
-    ctx.fillText(`Attitude: ${manual?"____________________":report.attitude||"—"}`,48,summaryTop+78);
-    drawCenteredReportText(ctx,`Conduct: ${manual?"____________________________":report.conduct||"—"}`,350,865,summaryTop+78);
-    drawRightReportText(ctx,`Interest: ${manual?"____________________":report.interest||"—"}`,1192,summaryTop+78);
+    ctx.fillStyle=ink;setReportFont(ctx,20,"bold");
+    ctx.fillText(`Average: ${manual?"......":`${number(average,1)}%`}`,47,1118);
+    drawCenteredReportText(ctx,`Attendance: ${manual?".... / ....":`${report.days_present||0} / ${report.days_school_opened||0}`}`,365,850,1118);
+    drawRightReportText(ctx,`Overall Position: ${manual?"..../....":position.position?`${position.position} / ${position.class_size}`:".... / ...."}`,1194,1118);
+    ctx.fillText(`Attitude: ${manual?".................................":report.attitude||""}`,47,1175);
+    drawCenteredReportText(ctx,`Conduct: ${manual?"................................":report.conduct||""}`,350,860,1175);
+    drawRightReportText(ctx,`Interest: ${manual?".........................":report.interest||""}`,1194,1175);
 
-    // Comments and signature.
-    const commentsTop=summaryTop+135;
-    ctx.fillStyle="#172238";setReportFont(ctx,17,"bold");
-    ctx.fillText("Class Teacher's Comment",45,commentsTop);
-    setReportFont(ctx,17,"normal");
-    if(manual){
-      ctx.strokeStyle="#93a6bf";ctx.lineWidth=1;
-      [commentsTop+33,commentsTop+65].forEach(y=>{ctx.beginPath();ctx.moveTo(45,y);ctx.lineTo(790,y);ctx.stroke()});
-    }else{
-      drawWrapped(ctx,report.teacher_comment||"",45,commentsTop+26,745,21,3);
+    // Comments, promotion, signature, and verification.
+    ctx.fillStyle=ink;setReportFont(ctx,20,"bold");ctx.fillText("Class Teacher's Comment",43,1219);
+    [1249,1278,1307].forEach(y=>drawReportDottedLine(ctx,43,850,y));
+    setReportFont(ctx,17,"normal");ctx.fillStyle=ink;
+    if(!manual){
+      const lines=reportTextLines(ctx,report.teacher_comment||"",790,3);
+      [1245,1274,1303].forEach((y,index)=>{if(lines[index])ctx.fillText(lines[index],47,y)});
     }
-
-    const principalTop=commentsTop+105;
-    setReportFont(ctx,17,"bold");ctx.fillStyle="#172238";ctx.fillText("Principal's Comment",45,principalTop);
+    setReportFont(ctx,20,"bold");ctx.fillText("Principal's Comment",43,1327);
+    [1357,1386].forEach(y=>drawReportDottedLine(ctx,43,650,y));
     setReportFont(ctx,17,"normal");
-    if(manual){
-      ctx.strokeStyle="#93a6bf";
-      [principalTop+33,principalTop+65].forEach(y=>{ctx.beginPath();ctx.moveTo(45,y);ctx.lineTo(650,y);ctx.stroke()});
-    }else{
-      drawWrapped(ctx,report.head_comment||"",45,principalTop+26,600,21,3);
+    if(!manual){
+      const lines=reportTextLines(ctx,report.head_comment||"",590,2);
+      [1353,1382].forEach((y,index)=>{if(lines[index])ctx.fillText(lines[index],47,y)});
     }
+    const promotedName=(state.boot.classes||[]).find(item=>item.id===report.promoted_to_class_id)?.name||"";
+    setReportFont(ctx,20,"bold");ctx.fillText(`Promoted To ${manual?"Basic.........":promotedName||"Basic........."}`,43,1422);
 
-    // Principal signature.
-    const signatureX=560,signatureY=principalTop+20;
-    if(signatureImage)drawImageContain(ctx,signatureImage,signatureX,signatureY,260,95);
-    ctx.strokeStyle="#45556f";ctx.lineWidth=1.3;ctx.beginPath();ctx.moveTo(signatureX,signatureY+105);ctx.lineTo(signatureX+270,signatureY+105);ctx.stroke();
-    ctx.fillStyle="#172238";setReportFont(ctx,16,"bold");
-    drawCenteredReportText(ctx,signer.full_name||school.head_name||"Principal",signatureX,signatureX+270,signatureY+128);
-    setReportFont(ctx,13,"normal");ctx.fillStyle="#5a687d";
-    drawCenteredReportText(ctx,manual?(signatureImage?"Template authorised by the Principal":"Principal signature"):(signatureImage?"Digitally signed by the Principal":"Principal"),signatureX,signatureX+270,signatureY+149);
-
-    // QR verification or school-portal QR for a manual template.
     const base=school.verification_base_url||school.website||`${location.origin}${location.pathname}`;
     const qrText=manual?base:`${base}${base.includes("?")?"&":"?"}verify=${publication?.verification_token||""}`;
     const qr=await qrCanvas(qrText);
-    if(qr)ctx.drawImage(qr,940,commentsTop+12,205,205);
-    ctx.fillStyle="#3f4e66";setReportFont(ctx,12,"normal");
-    drawCenteredReportText(ctx,manual?"School portal":"Scan to verify",930,1155,commentsTop+230);
-
-    // Identification and anti-tamper footer.
-    const footerY=1660;
-    ctx.fillStyle="#53647c";setReportFont(ctx,12,"normal");
-    ctx.fillText(`Report No.: ${manual?"MANUAL-TEMPLATE":report.report_number||""}`,45,footerY);
-    drawRightReportText(ctx,manual?`Generated: ${new Date().toLocaleDateString("en-GH")}`:`Date Issued: ${publication?.published_at?isoDate(publication.published_at):isoDate(new Date())}`,1195,footerY);
-    if(!manual&&publication?.verification_token){
-      drawRightReportText(ctx,`Verification: ${String(publication.verification_token).slice(0,18)}…`,1195,footerY+24);
+    if(qr)ctx.drawImage(qr,949,1210,190,190);
+    const verificationCode=reportVerificationCode(report,templateMeta,manual);
+    ctx.fillStyle="#5f708b";setReportFont(ctx,16,"normal");
+    const verificationText=`Verification: ${verificationCode}`;
+    if(ctx.measureText(verificationText).width<=290)drawCenteredReportText(ctx,verificationText,900,1190,1430);
+    else{
+      const splitAt=verificationCode.lastIndexOf("-");
+      const first=splitAt>0?`Verification: ${verificationCode.slice(0,splitAt+1)}`:"Verification:";
+      const second=splitAt>0?verificationCode.slice(splitAt+1):verificationCode;
+      drawCenteredReportText(ctx,first,900,1190,1424);
+      drawCenteredReportText(ctx,second,900,1190,1447);
     }
-    ctx.fillStyle=accent;ctx.fillRect(40,footerY+42,1160,8);
-    ctx.fillStyle="#111827";setReportFont(ctx,14,"bold","italic");
-    drawCenteredReportText(ctx,"N.B.: Any alteration, cancellation or erasing of any part of this report renders it void.",40,1200,footerY+79);
-    ctx.strokeStyle="#182c4c";ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(40,footerY+95);ctx.lineTo(1200,footerY+95);ctx.stroke();
+
+    const signatureLeft=515,signatureRight=865,signatureTop=1370;
+    if(signatureImage)drawImageContain(ctx,signatureImage,555,signatureTop,270,100);
+    ctx.strokeStyle="#5f708b";ctx.lineWidth=1.2;ctx.beginPath();ctx.moveTo(signatureLeft,1485);ctx.lineTo(signatureRight,1485);ctx.stroke();
+    ctx.fillStyle=ink;setReportFont(ctx,18,"bold");drawCenteredReportText(ctx,signer.full_name||school.head_name||"Principal",signatureLeft,signatureRight,1512);
+    ctx.fillStyle="#5f708b";setReportFont(ctx,16,"normal");drawCenteredReportText(ctx,"Digitally signed by the Principal",signatureLeft,signatureRight,1538);
+
+    const reportCode=reportVerificationCode(report,templateMeta,manual);
+    ctx.fillStyle="#5f708b";setReportFont(ctx,16,"normal");
+    ctx.fillText(`Report No.: ${reportCode}${manual?"...":""}`,43,1572);
+    const manualYear=(String(templateMeta.academicYearName||"").match(/\d{4}\s*$/)||[])[0]||String(new Date().getFullYear());
+    drawRightReportText(ctx,manual?`Date Issued: .../.../${manualYear}`:`Date Issued: ${reportDate(publication?.published_at||new Date())}`,1197,1572);
+    ctx.fillStyle=accent;ctx.fillRect(38,1603,1164,7);
+    ctx.fillStyle="#111111";setReportFont(ctx,17,"bold","italic");
+    drawCenteredReportText(ctx,"N.B.: Any Alteration, Cancellation or Erasing of any part of this report renders it void",38,1202,1654);
+    ctx.fillStyle=navy;ctx.fillRect(38,1671,1164,5);
 
     return canvas;
   }
 
   async function createReportPdf(editor,publication) {
-    const assets=await resolveReportImageAssets({
-      student:editor.student||{},
-      reportId:editor.report?.id||null,
-      manual:false
-    });
+    const assets=await resolveReportImageAssets({reportId:editor.report?.id||null,manual:false});
     const canvas=await drawPreferredTerminalReport({
-      student:editor.student||{},
-      report:editor.report||{},
-      subjects:editor.subjects||[],
-      publication,
-      manual:false,
-      assets
+      student:editor.student||{},report:editor.report||{},subjects:editor.subjects||[],publication,manual:false,assets
     });
-    const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",.96));
+    const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",.97));
     return imagePdf(jpeg,595.28,841.89);
   }
 
   async function createManualReportTemplatePdf({academicYearName="",termName="",className="",subjects=[]}={}) {
     const assets=await resolveReportImageAssets({manual:true});
     const templateSubjects=subjects.map(subject=>({
-      subject_id:subject.id,
-      subject_name:subject.name,
-      subject_code:subject.code,
-      total_score:null,
-      grade:"",
-      remark:"",
-      components:[]
+      subject_id:subject.id,subject_name:subject.name,subject_code:subject.code,total_score:null,grade:"",remark:"",components:[]
     }));
     const canvas=await drawPreferredTerminalReport({
-      student:{full_name:"",admission_no:"",class_name:className,academic_year_name:academicYearName,term_name:termName,photo_url:""},
-      report:{days_present:null,days_school_opened:null,attitude:"",conduct:"",interest:"",teacher_comment:"",head_comment:""},
-      subjects:templateSubjects,
-      publication:null,
-      manual:true,
-      templateMeta:{academicYearName,termName,className},
-      assets
+      student:{},report:{days_present:null,days_school_opened:null,attitude:"",conduct:"",interest:"",teacher_comment:"",head_comment:""},
+      subjects:templateSubjects,publication:null,manual:true,templateMeta:{academicYearName,termName,className},assets
     });
-    const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",.96));
+    const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",.97));
     return imagePdf(jpeg,595.28,841.89);
   }
 
