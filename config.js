@@ -1,6 +1,6 @@
 window.NIS_CONFIG = Object.freeze({
-  supabaseUrl: "YOUR_SUPABASE_URL",
-  supabaseAnonKey: "YOUR_SUPABASE_ANON_KEY",
+  supabaseUrl: "https://krvptqnwkmxlmwnxrdgp.supabase.co",
+  supabaseAnonKey: "sb_publishable_bvBPicI-E8xwl-TVqnlbkQ_0N4Dc1cC",
   appName: "Nipe International School Report Card System",
   logoPath: "assets/nipe-school-logo.png"
 });
