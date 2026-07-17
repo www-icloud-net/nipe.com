@@ -6,6 +6,7 @@
     supabaseAnonKey: window.NIS_CONFIG?.supabaseAnonKey || "YOUR_SUPABASE_ANON_KEY",
     appName: window.NIS_CONFIG?.appName || "Nipe International School Report Card System",
     logoPath: window.NIS_CONFIG?.logoPath || "assets/nipe-school-logo.png",
+    defaultReportTemplatePath: window.NIS_CONFIG?.defaultReportTemplatePath || "assets/approved-terminal-report-template.png",
     photoBucket: "student-photos",
     pdfBucket: "report-pdfs",
     backupBucket: "system-backups",
@@ -597,7 +598,7 @@
   init().catch(error=>{console.error(error);showOnly("authView");setAuthMessage("Service unavailable.");setLoading(false)});
   if(window.__NIS_TEMPLATE_TEST_MODE__){
     window.NIS_TEMPLATE_TEST_HOOKS=Object.freeze({
-      reportTemplateRangeForClass,validateReportTemplateFile,normaliseTemplateCanvas,drawAssignedTemplateOverlay,
+      reportTemplateRangeForClass,validateReportTemplateFile,normaliseTemplateCanvas,drawAssignedTemplateOverlay,drawPreferredTerminalReport,builtInReportTemplateCanvas,
       setBoot:value=>{state.boot=value},getState:()=>state
     });
   }
@@ -639,7 +640,7 @@
   }
   function headteacherSignaturePanel(record) {
     if(!record?.linked)return `<section class="panel signature-panel"><div class="panel-header"><div><h3>Digital Signature</h3><p>Principal report signing</p></div></div><div class="panel-body"><div class="empty"><strong>No linked principal record</strong><span>${esc(record?.error||"Ask the System Administrator to link this account to a principal record in Users and Access.")}</span></div></div></section>`;
-    return `<section class="panel signature-panel"><div class="panel-header"><div><h3>Digital Signature</h3><p>Uploaded signature appears on officially published student report cards</p></div><span class="status ${record.signature_path?"published":"draft"}">${record.signature_path?"Signature ready":"Not uploaded"}</span></div>
+    return `<section class="panel signature-panel"><div class="panel-header"><div><h3>Digital Signature</h3><p>The current signature replaces any signature embedded in report templates</p></div><span class="status ${record.signature_path?"published":"draft"}">${record.signature_path?"Signature ready":"Not uploaded"}</span></div>
       <div class="panel-body signature-layout"><div class="signature-preview-wrap">${record.signature_path?`<img id="headteacherSignaturePreview" alt="Principal signature">`:`<div class="signature-empty">No signature uploaded</div>`}</div>
       <div class="form-stack"><div><strong>${esc(record.full_name||"Principal")}</strong><p class="muted">Use a clear PNG, JPEG or WebP signature. A transparent PNG gives the best result.</p></div>
       <label class="field"><span>Signature image</span><input id="headteacherSignatureFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
@@ -660,12 +661,12 @@
         const {error}=await state.client.storage.from(CONFIG.signatureBucket).upload(path,blob,{contentType:"image/webp",upsert:false});if(error)throw error;
         await rpc("set_my_headteacher_signature",{target_signature_path:path,expected_updated_at:record.updated_at||null});
         if(record.signature_path&&record.signature_path!==path)await state.client.storage.from(CONFIG.signatureBucket).remove([record.signature_path]).catch(()=>{});
-        state.signatureUrls.clear();toast("Digital signature uploaded");await renderDashboard(state.viewToken);
+        state.signatureUrls.clear();toast("Digital signature uploaded","New and regenerated official report cards will use this signature.");await renderDashboard(state.viewToken);
       }catch(error){if(uploadedPath)await state.client.storage.from(CONFIG.signatureBucket).remove([uploadedPath]).catch(()=>{});toast("Signature not uploaded",friendlyError(error),"error",6500)}
       finally{button.disabled=false;button.textContent="Upload signature"}
     });
     byId("headteacherSignatureRemove")?.addEventListener("click",async()=>{
-      if(!await confirmAction("Remove Digital Signature","Published PDF files already generated remain unchanged. Future report cards will not show this signature.","Remove",true))return;
+      if(!await confirmAction("Remove Digital Signature","Published PDF files already generated remain unchanged. New and regenerated report cards will not show this signature.","Remove",true))return;
       try{await rpc("set_my_headteacher_signature",{target_signature_path:"",expected_updated_at:record.updated_at||null});if(record.signature_path)await state.client.storage.from(CONFIG.signatureBucket).remove([record.signature_path]).catch(()=>{});state.signatureUrls.clear();toast("Digital signature removed");await renderDashboard(state.viewToken)}
       catch(error){toast("Signature not removed",friendlyError(error),"error",6500)}
     });
@@ -1193,7 +1194,7 @@
     const activeTeachers=assignmentGroups.filter(group=>group.active_count>0).length;
     return `<div class="grid two">
       <section class="panel"><div class="panel-header"><div><h3>Classes</h3><p>${classes.length} configured</p></div><button class="button primary small" id="addClass">Add class</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Class</th><th>Level</th><th>Class Teacher</th><th></th></tr></thead><tbody>
+        <div class="table-wrap academic-list-scroll"><table><thead><tr><th>Class</th><th>Level</th><th>Class Teacher</th><th></th></tr></thead><tbody>
           ${classes.map(row=>`<tr><td><strong>${esc(row.name)}</strong></td><td>${number(row.level_order)}</td>
             <td>${esc(
               (state.academic.teacher_records||[]).find(t=>t.id===row.class_teacher_record_id)?.full_name
@@ -1203,7 +1204,7 @@
             <td><div class="table-actions"><button class="button ghost small" data-edit-class="${row.id}">Edit</button><button class="button danger small" data-remove-class="${row.id}">Remove</button></div></td></tr>`).join("")}
         </tbody></table></div></section>
       <section class="panel"><div class="panel-header"><div><h3>Subjects</h3><p>${subjects.length} configured</p></div><button class="button primary small" id="addSubject">Add subject</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Code</th><th>Subject</th><th>Order</th><th></th></tr></thead><tbody>
+        <div class="table-wrap academic-list-scroll"><table><thead><tr><th>Code</th><th>Subject</th><th>Order</th><th></th></tr></thead><tbody>
           ${subjects.map(row=>`<tr><td><strong>${esc(row.code)}</strong></td><td>${esc(row.name)}</td><td>${number(row.display_order)}</td>
             <td><div class="table-actions"><button class="button ghost small" data-edit-subject="${row.id}">Edit</button><button class="button danger small" data-remove-subject="${row.id}">Remove</button></div></td></tr>`).join("")}
         </tbody></table></div></section>
@@ -2285,13 +2286,36 @@
     return canvas;
   }
 
+  let builtInReportTemplatePromise=null;
+
+  async function builtInReportTemplateCanvas() {
+    if(!builtInReportTemplatePromise){
+      builtInReportTemplatePromise=loadImage(CONFIG.defaultReportTemplatePath)
+        .then(image=>normaliseTemplateCanvas(image))
+        .catch(error=>{builtInReportTemplatePromise=null;throw error});
+    }
+    return builtInReportTemplatePromise;
+  }
+
   async function resolveAssignedReportTemplate(className) {
     const template=await currentReportTemplateForClass(className);
-    if(!template)return {template:null,templateBackground:null};
-    try{return {template,templateBackground:await storedReportTemplateCanvas(template)}}
-    catch(error){
-      const group=reportTemplateGroup(template.range_key);
-      throw new Error(`The assigned ${group?.shortLabel||"class-range"} report-card template could not be loaded. Ask the System Administrator to replace or remove it.`,{cause:error});
+    if(!template){
+      try{return {template:null,templateBackground:await builtInReportTemplateCanvas(),templateSource:"built_in"}}
+      catch(error){
+        await reportClientError(error,{source:"built_in_report_template_load"});
+        return {template:null,templateBackground:null,templateSource:"programmatic_fallback",templateLoadError:true};
+      }
+    }
+    try{
+      return {template,templateBackground:await storedReportTemplateCanvas(template),templateSource:"uploaded"};
+    }catch(error){
+      await reportClientError(error,{source:"report_template_load",range_key:template.range_key,storage_path:template.storage_path});
+      try{
+        return {template,templateBackground:await builtInReportTemplateCanvas(),templateSource:"built_in_fallback",templateLoadError:true};
+      }catch(fallbackError){
+        await reportClientError(fallbackError,{source:"built_in_report_template_load",after_uploaded_template_failure:true});
+        return {template,templateBackground:null,templateSource:"programmatic_fallback",templateLoadError:true};
+      }
     }
   }
 
@@ -2375,11 +2399,8 @@
   async function resolveReportImageAssets({reportId=null,manual=false,studentPhotoPath="",className=""}={}) {
     const school=state.boot.school||{};
     const logo=await loadImage(school.logo_url?.startsWith("http")?school.logo_url:CONFIG.logoPath).catch(()=>null);
-    const signer=manual
-      ?await rpc("get_current_principal_signature").catch(()=>({full_name:school.head_name||"Principal",signature_path:""}))
-      :reportId
-        ?await rpc("get_report_headteacher_signature",{target_report_id:reportId}).catch(()=>({full_name:school.head_name||"Principal",signature_path:""}))
-        :{full_name:school.head_name||"Principal",signature_path:""};
+    const signer=await rpc("get_current_principal_signature")
+      .catch(()=>({full_name:school.head_name||"Principal",signature_path:""}));
     let signatureImage=null,studentPhotoImage=null;
     if(signer.signature_path){
       try{signatureImage=await loadImage(await signedUrl(CONFIG.signatureBucket,signer.signature_path,900))}catch(_){signatureImage=null}
@@ -2461,81 +2482,187 @@
 
 
   async function drawAssignedTemplateOverlay(ctx,canvas,{student={},report={},subjects=[],publication=null,manual=false,templateMeta={},assets={}}={}) {
-    const school=state.boot.school||{},ink="#17233b";
-    const {signer={},signatureImage,studentPhotoImage}=assets;
+    const school=state.boot.school||{},ink="#17233b",summaryPale="#eef4fb";
+    const {logo,signer={},signatureImage,studentPhotoImage}=assets;
     const showStudentPhoto=!manual&&Boolean(studentPhotoImage);
-    ctx.fillStyle=ink;ctx.textBaseline="alphabetic";
+    const tableLeft=38,tableRight=1202,tableTop=338,headerHeight=58,tableBottom=1086;
+    const bodyTop=tableTop+headerHeight,columns=[38,286,464,646,762,862,994,1202];
+
+    ctx.textBaseline="alphabetic";
+
+    // Remove all pre-filled or sample values from the uploaded design before
+    // inserting the live student data. Static headings and the uploaded visual
+    // design remain untouched.
+    ctx.fillStyle="#ffffff";
+    ctx.fillRect(38,232,1164,103);
+
+    const identityName=manual?"....................................................................":student.full_name||"";
+    const identityAdmission=manual?"NIS.......":student.admission_no||"";
+    const identityClass=manual?(templateMeta.className||"Basic ........."):student.class_name||"";
+    const identityYear=manual?(templateMeta.academicYearName||"................."):student.academic_year_name||"";
+    const identityTerm=manual?(templateMeta.termName||"........"):student.term_name||"";
+    drawInlineReportField(ctx,{label:"Name:",value:identityName,x:43,y:268,maxWidth:650,fontSize:19});
+    drawInlineReportField(ctx,{label:"Admission No.:",value:identityAdmission,x:1197,y:268,maxWidth:390,align:"right",fontSize:19});
+    drawInlineReportField(ctx,{label:"Class:",value:identityClass,x:43,y:323,maxWidth:360,fontSize:19});
+    drawInlineReportField(ctx,{label:"Academic Year:",value:identityYear,x:620,y:323,maxWidth:410,align:"center",fontSize:19});
+    drawInlineReportField(ctx,{label:"Term:",value:identityTerm,x:1197,y:323,maxWidth:300,align:"right",fontSize:19});
 
     if(showStudentPhoto){
       const frameX=1075,frameY=48,frameWidth=105,frameHeight=161,padding=4;
       ctx.fillStyle="#ffffff";ctx.fillRect(frameX,frameY,frameWidth,frameHeight);
-      ctx.strokeStyle="#d5dbe5";ctx.lineWidth=1.5;ctx.strokeRect(frameX-.5,frameY-.5,frameWidth+1,frameHeight+1);
-      ctx.save();ctx.beginPath();ctx.rect(frameX+padding,frameY+padding,frameWidth-padding*2,frameHeight-padding*2);ctx.clip();
-      drawImageCover(ctx,studentPhotoImage,frameX+padding,frameY+padding,frameWidth-padding*2,frameHeight-padding*2);ctx.restore();
+      ctx.strokeStyle="rgba(255,255,255,.96)";ctx.lineWidth=2;
+      ctx.strokeRect(frameX-.5,frameY-.5,frameWidth+1,frameHeight+1);
+      ctx.save();
+      ctx.beginPath();ctx.rect(frameX+padding,frameY+padding,frameWidth-padding*2,frameHeight-padding*2);ctx.clip();
+      drawImageCover(ctx,studentPhotoImage,frameX+padding,frameY+padding,frameWidth-padding*2,frameHeight-padding*2);
+      ctx.restore();
     }
 
-    const identityName=manual?"":student.full_name||"";
-    const identityAdmission=manual?"":student.admission_no||"";
-    const identityClass=manual?(templateMeta.className||""):student.class_name||"";
-    const identityYear=manual?(templateMeta.academicYearName||""):student.academic_year_name||"";
-    const identityTerm=manual?(templateMeta.termName||""):student.term_name||"";
-    drawReportCellText(ctx,identityName,104,720,260,{preferredSize:20,minimumSize:13,weight:"bold",colour:ink});
-    drawReportCellText(ctx,identityAdmission,930,1198,260,{align:"right",preferredSize:19,minimumSize:12,weight:"bold",colour:ink});
-    drawReportCellText(ctx,identityClass,105,395,315,{preferredSize:19,minimumSize:12,weight:"bold",colour:ink});
-    drawReportCellText(ctx,identityYear,535,850,315,{align:"center",preferredSize:19,minimumSize:12,weight:"bold",colour:ink});
-    drawReportCellText(ctx,identityTerm,1010,1198,315,{align:"right",preferredSize:19,minimumSize:12,weight:"bold",colour:ink});
+    // Rebuild the data region so pre-printed subject names or sample values can
+    // never show through the live report.
+    ctx.fillStyle="#ffffff";
+    ctx.fillRect(tableLeft+1,bodyTop+1,tableRight-tableLeft-2,tableBottom-bodyTop-2);
+    if(logo){
+      ctx.save();ctx.globalAlpha=.065;
+      drawImageContain(ctx,logo,420,548,400,430);
+      ctx.restore();
+    }
 
-    const tableTop=338,headerHeight=58,tableBottom=1086,columns=[38,286,464,646,762,862,994,1202];
-    const minimumRows=12,rowCount=Math.max(minimumRows,subjects.length),displaySubjects=Array.from({length:rowCount},(_,index)=>subjects[index]||null);
+    const minimumRows=12,rowCount=Math.max(minimumRows,subjects.length);
+    const displaySubjects=Array.from({length:rowCount},(_,index)=>subjects[index]||null);
     setReportFont(ctx,20,"normal");
-    const subjectWidths=displaySubjects.map(subject=>subject?reportTextLines(ctx,subject.subject_name||subject.name||"",columns[1]-columns[0]-16,2).length:1);
-    const weights=subjectWidths.map(lines=>lines>1?1.34:1),availableHeight=tableBottom-(tableTop+headerHeight),weightTotal=weights.reduce((sum,value)=>sum+value,0);
-    let rowY=tableTop+headerHeight;const ranks=manual?new Map():reportSubjectRanks(subjects);
+    const subjectWidths=displaySubjects.map(subject=>subject
+      ?reportTextLines(ctx,subject.subject_name||subject.name||"",columns[1]-columns[0]-16,2).length
+      :1
+    );
+    const weights=subjectWidths.map(lines=>lines>1?1.34:1);
+    const availableHeight=tableBottom-bodyTop,weightTotal=weights.reduce((sum,value)=>sum+value,0);
+    let rowY=bodyTop;
+    const ranks=manual?new Map():reportSubjectRanks(subjects);
+
+    ctx.strokeStyle="#1d1d1d";ctx.lineWidth=1.15;
+    ctx.beginPath();
+    columns.forEach(x=>{ctx.moveTo(x,bodyTop);ctx.lineTo(x,tableBottom)});
+    ctx.stroke();
+    ctx.strokeRect(tableLeft,bodyTop,tableRight-tableLeft,tableBottom-bodyTop);
+
     displaySubjects.forEach((subject,index)=>{
-      const rowHeight=index===displaySubjects.length-1?tableBottom-rowY:availableHeight*(weights[index]/weightTotal),nextY=rowY+rowHeight;
+      const rowHeight=index===displaySubjects.length-1
+        ?tableBottom-rowY
+        :availableHeight*(weights[index]/weightTotal);
+      const nextY=rowY+rowHeight;
+      ctx.strokeStyle="#1d1d1d";ctx.lineWidth=1;
+      ctx.beginPath();ctx.moveTo(tableLeft,nextY);ctx.lineTo(tableRight,nextY);ctx.stroke();
       if(subject){
-        const breakdown=manual?{classScore:null,examScore:null,total:null}:subjectScoreBreakdown(subject),score=value=>value===null||value===undefined?"":number(value,1);
-        drawReportWrappedCell(ctx,subject.subject_name||subject.name||"",columns[0],columns[1],rowY,nextY,{preferredSize:19,minimumSize:12,maxLines:2,weight:"bold",colour:ink});
-        drawReportCellText(ctx,score(breakdown.classScore),columns[1],columns[2],(rowY+nextY)/2,{align:"center",preferredSize:18,minimumSize:12,colour:ink});
-        drawReportCellText(ctx,score(breakdown.examScore),columns[2],columns[3],(rowY+nextY)/2,{align:"center",preferredSize:18,minimumSize:12,colour:ink});
-        drawReportCellText(ctx,score(breakdown.total),columns[3],columns[4],(rowY+nextY)/2,{align:"center",preferredSize:18,minimumSize:12,weight:"bold",colour:ink});
-        drawReportCellText(ctx,manual?"":subject.grade||"",columns[4],columns[5],(rowY+nextY)/2,{align:"center",preferredSize:18,minimumSize:12,weight:"bold",colour:ink});
-        drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id||subject.subject_name)||"",columns[5],columns[6],(rowY+nextY)/2,{align:"center",preferredSize:17,minimumSize:11,colour:ink});
-        drawReportCellText(ctx,manual?"":subject.remark||"",columns[6],columns[7],(rowY+nextY)/2,{preferredSize:17,minimumSize:10,colour:ink});
+        const breakdown=manual
+          ?{classScore:null,examScore:null,total:null}
+          :subjectScoreBreakdown(subject);
+        const score=value=>value===null||value===undefined?"":number(value,1);
+        drawReportWrappedCell(ctx,subject.subject_name||subject.name||"",columns[0],columns[1],rowY,nextY,{
+          preferredSize:20,minimumSize:13,maxLines:2,colour:ink
+        });
+        drawReportCellText(ctx,score(breakdown.classScore),columns[1],columns[2],(rowY+nextY)/2,{
+          align:"center",preferredSize:19,minimumSize:13,colour:ink
+        });
+        drawReportCellText(ctx,score(breakdown.examScore),columns[2],columns[3],(rowY+nextY)/2,{
+          align:"center",preferredSize:19,minimumSize:13,colour:ink
+        });
+        drawReportCellText(ctx,score(breakdown.total),columns[3],columns[4],(rowY+nextY)/2,{
+          align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:ink
+        });
+        drawReportCellText(ctx,manual?"":subject.grade||"",columns[4],columns[5],(rowY+nextY)/2,{
+          align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:ink
+        });
+        drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id||subject.subject_name)||"",columns[5],columns[6],(rowY+nextY)/2,{
+          align:"center",preferredSize:18,minimumSize:12,colour:ink
+        });
+        drawReportCellText(ctx,manual?"":subject.remark||"",columns[6],columns[7],(rowY+nextY)/2,{
+          preferredSize:18,minimumSize:11,colour:ink
+        });
       }
       rowY=nextY;
     });
 
-    const average=manual?"":subjects.length?subjects.reduce((sum,item)=>sum+Number(item.total_score||0),0)/subjects.length:0;
-    const position=manual?{position:0,class_size:0}:report.id?await rpc("report_position",{target_report_id:report.id}).catch(()=>({position:0,class_size:0})):{position:0,class_size:0};
-    drawReportCellText(ctx,manual?"":`${number(average,1)}%`,125,300,1112,{preferredSize:20,minimumSize:13,weight:"bold",colour:ink});
-    drawReportCellText(ctx,manual?"":`${report.days_present||0} / ${report.days_school_opened||0}`,565,780,1112,{align:"center",preferredSize:20,minimumSize:13,weight:"bold",colour:ink});
-    drawReportCellText(ctx,manual?"":position.position?`${position.position} / ${position.class_size}`:"",1010,1195,1112,{align:"right",preferredSize:20,minimumSize:13,weight:"bold",colour:ink});
-    drawReportCellText(ctx,manual?"":report.attitude||"",125,390,1168,{preferredSize:18,minimumSize:12,weight:"bold",colour:ink});
-    drawReportCellText(ctx,manual?"":report.conduct||"",575,850,1168,{align:"center",preferredSize:18,minimumSize:12,weight:"bold",colour:ink});
-    drawReportCellText(ctx,manual?"":report.interest||"",1010,1195,1168,{align:"right",preferredSize:18,minimumSize:12,weight:"bold",colour:ink});
+    // Rebuild the summary and signing area to prevent ghost text, old QR codes
+    // and an old embedded Principal signature from remaining in the template.
+    ctx.fillStyle=summaryPale;
+    ctx.fillRect(tableLeft,tableBottom,tableRight-tableLeft,109);
+    const average=manual?"":subjects.length
+      ?subjects.reduce((sum,item)=>sum+Number(item.total_score||0),0)/subjects.length
+      :0;
+    const position=manual
+      ?{position:0,class_size:0}
+      :report.id
+        ?await rpc("report_position",{target_report_id:report.id}).catch(()=>({position:0,class_size:0}))
+        :{position:0,class_size:0};
 
-    setReportFont(ctx,17,"normal");ctx.fillStyle=ink;
+    ctx.fillStyle=ink;setReportFont(ctx,20,"bold");
+    ctx.fillText(`Average: ${manual?"......":`${number(average,1)}%`}`,47,1118);
+    drawCenteredReportText(ctx,`Attendance: ${manual?".... / ....":`${report.days_present||0} / ${report.days_school_opened||0}`}`,365,850,1118);
+    drawRightReportText(ctx,`Overall Position: ${manual?"..../....":position.position?`${position.position} / ${position.class_size}`:".... / ...."}`,1194,1118);
+    ctx.fillText(`Attitude: ${manual?".................................":report.attitude||""}`,47,1175);
+    drawCenteredReportText(ctx,`Conduct: ${manual?"................................":report.conduct||""}`,350,860,1175);
+    drawRightReportText(ctx,`Interest: ${manual?".........................":report.interest||""}`,1194,1175);
+
+    ctx.fillStyle="#ffffff";
+    ctx.fillRect(tableLeft,1195,tableRight-tableLeft,403);
+
+    ctx.fillStyle=ink;setReportFont(ctx,20,"bold");
+    ctx.fillText("Class Teacher's Comment",43,1219);
+    [1249,1278,1307].forEach(y=>drawReportDottedLine(ctx,43,850,y));
+    setReportFont(ctx,17,"normal");
     if(!manual){
-      const teacherLines=reportTextLines(ctx,report.teacher_comment||"",790,3);[1245,1274,1303].forEach((y,index)=>{if(teacherLines[index])ctx.fillText(teacherLines[index],47,y)});
-      const principalLines=reportTextLines(ctx,report.head_comment||"",590,2);[1353,1382].forEach((y,index)=>{if(principalLines[index])ctx.fillText(principalLines[index],47,y)});
+      const teacherLines=reportTextLines(ctx,report.teacher_comment||"",790,3);
+      [1245,1274,1303].forEach((y,index)=>{if(teacherLines[index])ctx.fillText(teacherLines[index],47,y)});
     }
+
+    setReportFont(ctx,20,"bold");ctx.fillText("Principal's Comment",43,1327);
+    [1357,1386].forEach(y=>drawReportDottedLine(ctx,43,650,y));
+    setReportFont(ctx,17,"normal");
+    if(!manual){
+      const principalLines=reportTextLines(ctx,report.head_comment||"",590,2);
+      [1353,1382].forEach((y,index)=>{if(principalLines[index])ctx.fillText(principalLines[index],47,y)});
+    }
+
     const promotedName=(state.boot.classes||[]).find(item=>item.id===report.promoted_to_class_id)?.name||"";
-    drawReportCellText(ctx,manual?"":promotedName,180,520,1416,{preferredSize:19,minimumSize:12,weight:"bold",colour:ink});
+    setReportFont(ctx,20,"bold");
+    ctx.fillText(`Promoted To ${manual?"Basic.........":promotedName||"Basic........."}`,43,1422);
 
     const base=school.verification_base_url||school.website||`${location.origin}${location.pathname}`;
     const qrText=manual?base:`${base}${base.includes("?")?"&":"?"}verify=${publication?.verification_token||""}`;
-    const qr=await qrCanvas(qrText);if(qr)ctx.drawImage(qr,949,1210,190,190);
+    const qr=await qrCanvas(qrText);
+    if(qr)ctx.drawImage(qr,949,1210,190,190);
+
     const verificationCode=reportVerificationCode(report,templateMeta,manual);
     ctx.fillStyle="#5f708b";setReportFont(ctx,16,"normal");
-    if(!manual)drawCenteredReportText(ctx,verificationCode,900,1190,1438);
+    const verificationText=`Verification: ${verificationCode}`;
+    if(ctx.measureText(verificationText).width<=290){
+      drawCenteredReportText(ctx,verificationText,900,1190,1430);
+    }else{
+      const splitAt=verificationCode.lastIndexOf("-");
+      const first=splitAt>0?`Verification: ${verificationCode.slice(0,splitAt+1)}`:"Verification:";
+      const second=splitAt>0?verificationCode.slice(splitAt+1):verificationCode;
+      drawCenteredReportText(ctx,first,900,1190,1424);
+      drawCenteredReportText(ctx,second,900,1190,1447);
+    }
 
     const signatureLeft=515,signatureRight=865,signatureTop=1370;
     if(signatureImage)drawImageContain(ctx,signatureImage,555,signatureTop,270,100);
-    if(!manual){ctx.fillStyle=ink;setReportFont(ctx,18,"bold");drawCenteredReportText(ctx,signer.full_name||school.head_name||"Principal",signatureLeft,signatureRight,1512)}
+    ctx.strokeStyle="#5f708b";ctx.lineWidth=1.2;
+    ctx.beginPath();ctx.moveTo(signatureLeft,1485);ctx.lineTo(signatureRight,1485);ctx.stroke();
+    ctx.fillStyle=ink;setReportFont(ctx,18,"bold");
+    drawCenteredReportText(ctx,signer.full_name||school.head_name||"Principal",signatureLeft,signatureRight,1512);
+    ctx.fillStyle="#5f708b";setReportFont(ctx,16,"normal");
+    drawCenteredReportText(ctx,"Digitally signed by the Principal",signatureLeft,signatureRight,1538);
+
     const reportCode=reportVerificationCode(report,templateMeta,manual);
     ctx.fillStyle="#5f708b";setReportFont(ctx,16,"normal");
-    if(!manual){ctx.fillText(reportCode,155,1572);drawRightReportText(ctx,reportDate(publication?.published_at||new Date()),1197,1572)}
+    ctx.fillText(`Report No.: ${reportCode}${manual?"...":""}`,43,1572);
+    const manualYear=(String(templateMeta.academicYearName||"").match(/\d{4}\s*$/)||[])[0]||String(new Date().getFullYear());
+    drawRightReportText(ctx,manual
+      ?`Date Issued: .../.../${manualYear}`
+      :`Date Issued: ${reportDate(publication?.published_at||new Date())}`,1197,1572);
+
     return canvas;
   }
 
@@ -3284,7 +3411,7 @@
         <div class="report-template-card-head"><div><h5>${esc(group.label)}</h5><p>${classes.length?esc(classes.map(item=>item.name).join(", ")):"No matching active classes found"}</p></div>
           <span class="status ${template?"published":"draft"}">${template?"Assigned":"Built-in fallback"}</span></div>
         ${template?`<div class="template-file-summary"><strong>${esc(template.original_name)}</strong><span>${esc(String(template.mime_type||"").includes("pdf")?"PDF":"DOCX")} • ${readableBytes(template.file_size)} • Version ${number(template.version||1)}</span><small>Updated ${isoDateTime(template.updated_at)}</small></div>`:
-          `<div class="template-file-summary empty-template"><strong>No uploaded template</strong><span>The approved built-in report-card design is used for this class range.</span></div>`}
+          `<div class="template-file-summary empty-template"><strong>No uploaded template</strong><span>The approved Nipe terminal-report design is used automatically for this class range.</span></div>`}
         <label class="field"><span>${template?"Replace template":"Upload template"}</span><input type="file" data-template-file="${attr(group.key)}" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"></label>
         <div class="button-row">
           <button class="button primary small" type="button" data-template-upload="${attr(group.key)}">${template?"Replace":"Upload"}</button>
@@ -3326,19 +3453,22 @@
     const template=findReportTemplate(rangeKey);if(!template)return;
     setLoading(true);
     try{
-      const background=await renderReportTemplateBlob(await reportTemplateBlob(template),template.mime_type);
-      const canvas=document.createElement("canvas");canvas.width=1240;canvas.height=1754;const ctx=canvas.getContext("2d");ctx.drawImage(background,0,0,canvas.width,canvas.height);
-      const sampleSubjects=(state.boot.subjects||[]).filter(item=>item.active!==false&&!item.deleted_at).slice(0,10).map((subject,index)=>({
-        subject_id:subject.id||String(index+1),subject_name:subject.name||`Subject ${index+1}`,total_score:80-index*3,grade:index<4?"A":"B",remark:index<4?"Excellent":"Very Good",components:[{name:"Class Score",code:"CA",raw_score:24-index%4,weighted_score:24-index%4},{name:"Examination",code:"EXAM",raw_score:56-index*2,weighted_score:56-index*2}]
-      }));
-      if(!sampleSubjects.length)sampleSubjects.push({subject_id:"sample-1",subject_name:"English Language",total_score:82,grade:"A",remark:"Excellent",components:[{name:"Class Score",code:"CA",raw_score:25,weighted_score:25},{name:"Examination",code:"EXAM",raw_score:57,weighted_score:57}]},{subject_id:"sample-2",subject_name:"Mathematics",total_score:76,grade:"B",remark:"Very Good",components:[{name:"Class Score",code:"CA",raw_score:23,weighted_score:23},{name:"Examination",code:"EXAM",raw_score:53,weighted_score:53}]});
-      const className=templateClassesForRange(rangeKey)[0]?.name||reportTemplateGroup(rangeKey)?.shortLabel||"Class";
-      await drawAssignedTemplateOverlay(ctx,canvas,{student:{full_name:"Sample Student",admission_no:"NIS00000",class_name:className,academic_year_name:activeYear()?.name||"2026/2027",term_name:activeTerm()?.name||"Term 1"},report:{days_present:58,days_school_opened:60,attitude:"Very Good",conduct:"Very Good",interest:"Learning",teacher_comment:"A focused learner who is making very good academic progress.",head_comment:"Keep working diligently and confidently."},subjects:sampleSubjects,publication:{verification_token:"template-preview",published_at:new Date().toISOString()},assets:{signer:{full_name:state.boot.school?.head_name||"Principal"}}});
-      modal(`${reportTemplateGroup(rangeKey)?.shortLabel||"Report"} Template`,`${template.original_name} • sample field-map preview`,
-        `<div class="report-template-preview"><img src="${canvas.toDataURL("image/jpeg",.92)}" alt="Report-card template preview with sample data"></div>`,
-        `<button class="button ghost" id="templatePreviewClose" type="button">Close</button><button class="button primary" id="templatePreviewDownload" type="button">Download original</button>`,"wide");
-      byId("templatePreviewClose").onclick=closeModal;byId("templatePreviewDownload").onclick=()=>downloadReportCardTemplate(rangeKey);
-    }catch(error){toast("Preview unavailable",friendlyError(error),"error",6500)}finally{setLoading(false)}
+      const canvas=await renderReportTemplateBlob(await reportTemplateBlob(template),template.mime_type);
+      modal(
+        `${reportTemplateGroup(rangeKey)?.shortLabel||"Report"} Template`,
+        `${template.original_name} • exact uploaded-file preview`,
+        `<div class="report-template-preview"><img src="${canvas.toDataURL("image/png")}" alt="Exact uploaded report-card template preview"></div>
+         <div class="template-preview-note">This preview shows the uploaded design exactly as supplied. When an official report is generated, the system clears pre-filled sample data and inserts the current student details, results, QR code and current Principal signature without ghost text.</div>`,
+        `<button class="button ghost" id="templatePreviewClose" type="button">Close</button><button class="button primary" id="templatePreviewDownload" type="button">Download original</button>`,
+        "wide"
+      );
+      byId("templatePreviewClose").onclick=closeModal;
+      byId("templatePreviewDownload").onclick=()=>downloadReportCardTemplate(rangeKey);
+    }catch(error){
+      toast("Preview unavailable",friendlyError(error),"error",6500);
+    }finally{
+      setLoading(false);
+    }
   }
 
   async function downloadReportCardTemplate(rangeKey) {
@@ -3420,7 +3550,7 @@
       </div>
       <section class="panel pad report-template-admin">
         <div class="section-title"><div><h4>Report Card Templates by Class Range</h4><p>Upload one A4 portrait PDF or DOCX design for each fixed class range. The system automatically places the official student data, photograph, scores, comments, signature and verification details on the assigned design.</p></div></div>
-        <div class="template-information"><strong>Template field map</strong><span>Uploaded designs should follow the approved A4 report-card field positions. A valid template is preview-rendered before it can be assigned. When a range has no uploaded template, the approved built-in design is used automatically.</span></div>
+        <div class="template-information"><strong>Template field map</strong><span>Uploaded designs should follow the approved A4 report-card field positions. A valid template is preview-rendered before it can be assigned. When a range has no uploaded template, the approved Nipe terminal-report design supplied with the system is used automatically.</span></div>
         ${reportTemplateCardsHtml(templates,templateLoadError)}
       </section>`;
     byId("schoolSave")?.addEventListener("click",saveSchoolSettings);

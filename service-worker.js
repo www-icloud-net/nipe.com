@@ -1,7 +1,7 @@
-const CACHE_NAME = "nis-report-card-v6-6-3-fresh-fixed-r1";
+const CACHE_NAME = "nis-report-card-v6-6-4-r1";
 const STATIC_ASSETS = [
   "./","index.html","style.css","app.js","config.js","manifest.webmanifest",
-  "assets/nipe-school-logo.png"
+  "assets/nipe-school-logo.png","assets/approved-terminal-report-template.png"
 ];
 self.addEventListener("install",event=>{
   event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(STATIC_ASSETS)).then(()=>self.skipWaiting()));

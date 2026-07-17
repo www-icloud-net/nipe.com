@@ -636,3 +636,33 @@ td{font-size:13px}
 .docx-template-render-host .nis-docx-template-wrapper{background:#fff!important;padding:0!important}
 .docx-template-render-host section.nis-docx-template{box-shadow:none!important;margin:0!important}
 @media(max-width:1050px){.report-template-grid{grid-template-columns:1fr}}
+
+/* Enterprise v6.6.4 compact academic lists and exact template preview */
+.academic-list-scroll{
+  max-height:520px;
+  overflow-x:auto;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-gutter:stable;
+}
+.academic-list-scroll thead th{
+  position:sticky;
+  top:0;
+  z-index:3;
+  background:#f4f7fb;
+  box-shadow:0 1px 0 var(--line);
+}
+.template-preview-note{
+  margin-top:12px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:12px 14px;
+  background:#f7faff;
+  color:var(--muted);
+  font-size:12px;
+  line-height:1.55;
+  text-align:left;
+}
+@media(max-width:760px){
+  .academic-list-scroll{max-height:58vh}
+}
