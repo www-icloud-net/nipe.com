@@ -616,3 +616,23 @@ td{font-size:13px}
 }
 .template-information strong{color:#183153}
 .template-information span{color:var(--muted);font-size:12px}
+
+
+/* v6.6.3 class-range report-card template administration */
+.report-template-admin{margin-top:18px}
+.report-template-admin .section-title>div{display:grid;gap:4px}
+.report-template-admin .section-title p{margin:0;color:var(--muted);max-width:980px;line-height:1.55}
+.report-template-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:16px}
+.report-template-card{border:1px solid var(--line);border-radius:16px;padding:16px;background:linear-gradient(180deg,#fff,#f9fbff);display:grid;gap:14px;min-width:0}
+.report-template-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.report-template-card-head h5{margin:0 0 5px;font-size:16px;color:var(--text)}
+.report-template-card-head p{margin:0;color:var(--muted);font-size:12px;line-height:1.45}
+.template-file-summary{border:1px solid #d9e2f0;border-radius:12px;background:#f3f7fd;padding:12px;display:grid;gap:4px;min-height:82px}
+.template-file-summary strong{overflow-wrap:anywhere}
+.template-file-summary span,.template-file-summary small{color:var(--muted);font-size:12px;line-height:1.4}
+.template-file-summary.empty-template{background:#fbfcfe;border-style:dashed}
+.report-template-preview{max-height:72vh;overflow:auto;background:#e8edf5;padding:16px;border-radius:14px;text-align:center}
+.report-template-preview img{display:block;max-width:100%;height:auto;margin:auto;background:#fff;box-shadow:0 12px 35px rgba(18,39,76,.18)}
+.docx-template-render-host .nis-docx-template-wrapper{background:#fff!important;padding:0!important}
+.docx-template-render-host section.nis-docx-template{box-shadow:none!important;margin:0!important}
+@media(max-width:1050px){.report-template-grid{grid-template-columns:1fr}}

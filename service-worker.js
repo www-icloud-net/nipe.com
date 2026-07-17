@@ -1,4 +1,4 @@
-const CACHE_NAME = "nis-report-card-v6-6-2";
+const CACHE_NAME = "nis-report-card-v6-6-3";
 const STATIC_ASSETS = [
   "./","index.html","style.css","app.js","config.js","manifest.webmanifest",
   "assets/nipe-school-logo.png"
