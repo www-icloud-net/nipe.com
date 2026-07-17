@@ -925,22 +925,30 @@
       button.disabled=false;button.textContent="Save student";return;
     }
 
-    let photoWarning="";
+    let photoWarning="",photoReportSummary="";
     const file=byId("studentPhotoFile")?.files?.[0];
     if(file) {
-      let uploadedPhotoPath="";
+      let uploadedPhotoPath="",photoSaved=false;
       try {
         uploadedPhotoPath=await uploadStudentPhoto(saved.student.id,file);
         saved=await rpc("set_student_photo",{target_student_id:saved.student.id,target_photo_url:uploadedPhotoPath,expected_updated_at:saved.student.updated_at||null});
-        uploadedPhotoPath="";
+        uploadedPhotoPath="";photoSaved=true;
       } catch(error) {
         if(uploadedPhotoPath)await state.client.storage.from(CONFIG.photoBucket).remove([uploadedPhotoPath]).catch(()=>{});
         await reportClientError(error,{source:"student_save",stage:"photo",student_id:saved.student.id});
         photoWarning="The student record was saved, but the photograph was not updated.";
       }
+      if(photoSaved){
+        button.textContent="Updating report PDFs";
+        const refreshed=await refreshPublishedStudentReportPdfs(saved.student);
+        if(refreshed.updated)photoReportSummary=`${refreshed.updated} published report PDF${refreshed.updated===1?"":"s"} updated with the photograph.`;
+        if(refreshed.failed)photoWarning=`The photograph was saved, but ${refreshed.failed} published report PDF${refreshed.failed===1?"":"s"} could not be refreshed automatically.`;
+      }
     }
 
-    state.workspace=null;closeModal();toast("Student record saved",photoWarning,photoWarning?"warning":"success",6500);
+    state.workspace=null;closeModal();
+    const saveDetail=[photoReportSummary,photoWarning].filter(Boolean).join(" ");
+    toast("Student record saved",saveDetail,photoWarning?"warning":"success",7500);
     try {
       state.boot=await rpc("get_bootstrap_data");
       await loadStudentPage();
@@ -2007,17 +2015,60 @@
     downloadText("report-cards.csv",[headers.join(","),...(data.rows||[]).map(row=>headers.map(h=>csvCell(row[h])).join(","))].join("\n"),"text/csv");
   }
 
+  async function createAndStoreOfficialPdf(editor,publication) {
+    if(!editor?.report?.id||!publication||publication.revoked_at)throw new Error("Active publication record not found");
+    const pdf=await createReportPdf(editor,publication);
+    const checksum=await sha256(pdf),safeName=(editor.report.report_number||editor.report.id).replace(/[^A-Za-z0-9_-]/g,"_");
+    const previousPath=publication.storage_path||"";
+    const path=`${editor.report.id}/${safeName}-v${editor.report.version}-${Date.now()}.pdf`;
+    const {error}=await state.client.storage.from(CONFIG.pdfBucket).upload(path,pdf,{contentType:"application/pdf",upsert:false,cacheControl:"31536000"});
+    if(error)throw error;
+    try{
+      await rpc("register_report_pdf",{target_report_id:editor.report.id,target_storage_path:path,target_checksum:checksum,target_page_count:1});
+    }catch(error){
+      await state.client.storage.from(CONFIG.pdfBucket).remove([path]).catch(()=>{});throw error;
+    }
+    state.pdfUrls.delete(path);
+    if(previousPath&&previousPath!==path){
+      state.pdfUrls.delete(previousPath);
+      await state.client.storage.from(CONFIG.pdfBucket).remove([previousPath]).catch(()=>{});
+    }
+    return {pdf,safeName,path};
+  }
+
+  async function refreshPublishedStudentReportPdfs(student) {
+    if(!student?.id||!student?.admission_no)return {updated:0,failed:0};
+    let rows=[];
+    try{
+      const data=await rpc("list_report_cards_v6",{
+        target_term_id:null,target_class_id:null,target_status:"published",search_text:student.admission_no,
+        archive_filter:"active",page_number:1,page_size:100
+      });
+      rows=(data.rows||[]).filter(row=>row.student_id===student.id&&!row.archived&&row.status==="published");
+    }catch(error){
+      await reportClientError(error,{source:"student_photo_pdf_refresh",stage:"list",student_id:student.id});
+      return {updated:0,failed:1};
+    }
+    let updated=0,failed=0;
+    for(const row of rows){
+      try{
+        const editor=await rpc("get_report_editor",{target_report_id:row.id,target_enrollment_id:null,target_term_id:null});
+        const publication=(editor.publications||[]).find(item=>!item.revoked_at);
+        if(!publication)continue;
+        await createAndStoreOfficialPdf(editor,publication);updated+=1;
+      }catch(error){
+        failed+=1;await reportClientError(error,{source:"student_photo_pdf_refresh",stage:"generate",student_id:student.id,report_id:row.id});
+      }
+    }
+    return {updated,failed};
+  }
+
   async function generateAndUploadOfficialPdf() {
     const editor=state.reportEditor,publication=(editor.publications||[]).find(p=>!p.revoked_at);
     if(!publication)throw new Error("Publication record not found");
     setLoading(true);
     try{
-      const pdf=await createReportPdf(editor,publication);
-      const checksum=await sha256(pdf),safeName=(editor.report.report_number||editor.report.id).replace(/[^A-Za-z0-9_-]/g,"_");
-      const path=`${editor.report.id}/${safeName}-v${editor.report.version}.pdf`;
-      const {error}=await state.client.storage.from(CONFIG.pdfBucket).upload(path,pdf,{contentType:"application/pdf",upsert:true,cacheControl:"31536000"});
-      if(error)throw error;
-      await rpc("register_report_pdf",{target_report_id:editor.report.id,target_storage_path:path,target_checksum:checksum,target_page_count:1});
+      const {pdf,safeName}=await createAndStoreOfficialPdf(editor,publication);
       state.reportEditor=await rpc("get_report_editor",{target_report_id:editor.report.id,target_enrollment_id:null,target_term_id:null});
       renderReportEditor();downloadBlob(`${safeName}.pdf`,pdf);toast("Official PDF created");
     }catch(error){toast("PDF not created",friendlyError(error),"error");await reportClientError(error,{source:"pdf",report_id:editor.report.id})}
@@ -2041,6 +2092,10 @@
   }
   function drawImageContain(ctx,image,x,y,width,height) {
     const scale=Math.min(width/image.width,height/image.height),drawWidth=image.width*scale,drawHeight=image.height*scale;ctx.drawImage(image,x+(width-drawWidth)/2,y+(height-drawHeight)/2,drawWidth,drawHeight);
+  }
+  function drawImageCover(ctx,image,x,y,width,height) {
+    const scale=Math.max(width/image.width,height/image.height),drawWidth=image.width*scale,drawHeight=image.height*scale;
+    ctx.drawImage(image,x+(width-drawWidth)/2,y+(height-drawHeight)/2,drawWidth,drawHeight);
   }
   function drawWrapped(ctx,text,x,y,maxWidth,lineHeight,maxLines=3) {
     const words=String(text||"").split(/\s+/);let line="",lines=0;
@@ -2140,7 +2195,7 @@
     ]));
   }
 
-  async function resolveReportImageAssets({reportId=null,manual=false}={}) {
+  async function resolveReportImageAssets({reportId=null,manual=false,studentPhotoPath=""}={}) {
     const school=state.boot.school||{};
     const logo=await loadImage(school.logo_url?.startsWith("http")?school.logo_url:CONFIG.logoPath).catch(()=>null);
     const signer=manual
@@ -2148,11 +2203,15 @@
       :reportId
         ?await rpc("get_report_headteacher_signature",{target_report_id:reportId}).catch(()=>({full_name:school.head_name||"Principal",signature_path:""}))
         :{full_name:school.head_name||"Principal",signature_path:""};
-    let signatureImage=null;
+    let signatureImage=null,studentPhotoImage=null;
     if(signer.signature_path){
       try{signatureImage=await loadImage(await signedUrl(CONFIG.signatureBucket,signer.signature_path,900))}catch(_){signatureImage=null}
     }
-    return {logo,signer,signatureImage};
+    if(!manual&&studentPhotoPath){
+      try{studentPhotoImage=await loadImage(await signedUrl(CONFIG.photoBucket,studentPhotoPath,900))}
+      catch(error){throw new Error("The student photograph could not be loaded for the official PDF. Verify the student photo and try again.",{cause:error})}
+    }
+    return {logo,signer,signatureImage,studentPhotoImage};
   }
 
   function reportTextLines(ctx,text,maxWidth,maxLines=3) {
@@ -2229,21 +2288,30 @@
     canvas.width=1240;canvas.height=1754;
     const ctx=canvas.getContext("2d"),school=state.boot.school||{};
     const navy="#123a79",accent="#f79646",headerPale="#dce8f6",summaryPale="#eef4fb",ink="#17233b";
-    const {logo,signer={},signatureImage}=assets;
+    const {logo,signer={},signatureImage,studentPhotoImage}=assets;
+    const showStudentPhoto=!manual&&Boolean(studentPhotoImage);
 
     ctx.fillStyle="#ffffff";ctx.fillRect(0,0,canvas.width,canvas.height);
 
     // Header, proportioned to the approved Nipe terminal-report template.
     ctx.fillStyle=navy;ctx.fillRect(38,29,1164,199);
     if(logo)drawImageContain(ctx,logo,57,58,140,145);
+    const headerTextRight=showStudentPhoto?1057:1202;
     ctx.fillStyle="#ffffff";
     const schoolName=(school.school_name||"NIPE INTERNATIONAL SCHOOL").toUpperCase();
-    const titleSize=fitReportText(ctx,schoolName,930,36,27,"bold");
-    setReportFont(ctx,titleSize,"bold");drawCenteredReportText(ctx,schoolName,205,1202,79);
-    setReportFont(ctx,16,"normal");drawCenteredReportText(ctx,school.motto||"Discipline, Commitment, Excellence",205,1202,108);
-    drawCenteredReportText(ctx,school.address||"Santeo, Cedar Estate",205,1202,132);
-    drawCenteredReportText(ctx,school.phone||"(+233) 559671336 / (+233) 241397124",205,1202,156);
-    setReportFont(ctx,27,"bold");drawCenteredReportText(ctx,school.report_title||"Student Terminal Report",205,1202,209);
+    const titleSize=fitReportText(ctx,schoolName,headerTextRight-225,36,24,"bold");
+    setReportFont(ctx,titleSize,"bold");drawCenteredReportText(ctx,schoolName,205,headerTextRight,79);
+    setReportFont(ctx,16,"normal");drawCenteredReportText(ctx,school.motto||"Discipline, Commitment, Excellence",205,headerTextRight,108);
+    drawCenteredReportText(ctx,school.address||"Santeo, Cedar Estate",205,headerTextRight,132);
+    drawCenteredReportText(ctx,school.phone||"(+233) 559671336 / (+233) 241397124",205,headerTextRight,156);
+    setReportFont(ctx,27,"bold");drawCenteredReportText(ctx,school.report_title||"Student Terminal Report",205,headerTextRight,209);
+    if(showStudentPhoto){
+      const frameX=1075,frameY=48,frameWidth=105,frameHeight=161,padding=4;
+      ctx.fillStyle="#ffffff";ctx.fillRect(frameX,frameY,frameWidth,frameHeight);
+      ctx.strokeStyle="rgba(255,255,255,.95)";ctx.lineWidth=2;ctx.strokeRect(frameX-.5,frameY-.5,frameWidth+1,frameHeight+1);
+      ctx.save();ctx.beginPath();ctx.rect(frameX+padding,frameY+padding,frameWidth-padding*2,frameHeight-padding*2);ctx.clip();
+      drawImageCover(ctx,studentPhotoImage,frameX+padding,frameY+padding,frameWidth-padding*2,frameHeight-padding*2);ctx.restore();
+    }
 
     const identityName=manual?"....................................................................":student.full_name||"";
     const identityAdmission=manual?"NIS.......":student.admission_no||"";
@@ -2364,7 +2432,9 @@
   }
 
   async function createReportPdf(editor,publication) {
-    const assets=await resolveReportImageAssets({reportId:editor.report?.id||null,manual:false});
+    const assets=await resolveReportImageAssets({
+      reportId:editor.report?.id||null,manual:false,studentPhotoPath:editor.student?.photo_url||""
+    });
     const canvas=await drawPreferredTerminalReport({
       student:editor.student||{},report:editor.report||{},subjects:editor.subjects||[],publication,manual:false,assets
     });
