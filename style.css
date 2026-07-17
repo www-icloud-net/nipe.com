@@ -532,3 +532,87 @@ td{font-size:13px}
     grid-column:1/-1;
   }
 }
+
+
+/* Enterprise v6.5.8 mixed Class Teacher and Subject Teacher responsibilities */
+.teaching-responsibility-summary{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:12px;
+  margin-bottom:12px;
+}
+.teaching-responsibility-summary article{
+  border:1px solid var(--line);
+  border-radius:13px;
+  background:#f8fbff;
+  padding:13px 15px;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.teaching-responsibility-summary article>span{
+  color:var(--muted);
+  font-size:10px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+}
+.teaching-responsibility-summary article strong{
+  color:#183153;
+  font-size:14px;
+}
+.teaching-responsibility-summary article small{
+  color:var(--muted);
+}
+.responsibility-groups{
+  display:grid;
+  gap:8px;
+  max-height:260px;
+  overflow:auto;
+}
+.responsibility-group{
+  display:grid;
+  grid-template-columns:minmax(130px,.32fr) minmax(0,1fr);
+  gap:12px;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:11px;
+  background:#fff;
+}
+.responsibility-group strong{
+  color:#183153;
+}
+.responsibility-group span{
+  color:var(--muted);
+}
+.responsibility-empty{
+  border:1px dashed var(--line);
+  border-radius:12px;
+  padding:16px;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  text-align:center;
+  color:var(--muted);
+}
+.responsibility-empty strong{
+  color:#253957;
+}
+@media(max-width:760px){
+  .teaching-responsibility-summary{grid-template-columns:1fr}
+  .responsibility-group{grid-template-columns:1fr}
+}
+
+
+/* Enterprise v6.6.0 report-card template controls */
+.template-information{
+  border:1px solid var(--line);
+  border-radius:12px;
+  padding:13px 15px;
+  background:#f7faff;
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.template-information strong{color:#183153}
+.template-information span{color:var(--muted);font-size:12px}

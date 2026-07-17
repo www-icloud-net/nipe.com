@@ -1559,6 +1559,7 @@
       <div class="page-head"><div><h3>Report Cards</h3><p>Transactional assessment, review, approval, and publication</p></div>
         <div class="page-actions">
           ${can("import_scores")?`<button class="button outline" id="scoreImport">Import scores</button>`:""}
+          <button class="button outline" id="manualReportTemplate">Manual template</button>
           <button class="button outline" id="reportExport">Export list</button>
           ${can("create_reports")?`<button class="button primary" id="reportNew">New report</button>`:""}
         </div></div>
@@ -1575,6 +1576,7 @@
       </section>`;
     byId("reportNew")?.addEventListener("click",openNewReportPicker);
     byId("scoreImport")?.addEventListener("click",openScoreImport);
+    byId("manualReportTemplate")?.addEventListener("click",openManualReportTemplate);
     byId("reportExport")?.addEventListener("click",exportReportList);
     let timer;
     byId("reportSearch").oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>{state.reportPage=1;loadReportPage(token)},250)};
@@ -1940,6 +1942,62 @@
       catch(error){toast("Score import unsuccessful",friendlyError(error),"error")}finally{button.disabled=false}
     };
   }
+
+  function openManualReportTemplate() {
+    const years=(state.boot.academic_years||[]).filter(item=>!item.deleted_at);
+    const classes=(state.boot.classes||[]).filter(item=>item.active!==false&&!item.deleted_at);
+    const activeSubjects=(state.boot.subjects||[]).filter(item=>item.active!==false&&!item.deleted_at);
+    modal("Manual Report Card Template","Download a professionally formatted blank report card containing every active subject.",`
+      <form id="manualTemplateForm" class="form-stack">
+        <div class="form-grid">
+          <label class="field"><span>Academic year</span><select name="academic_year_id">${optionList(years,"id","name",activeYear()?.id,"Leave blank")}</select></label>
+          <label class="field"><span>Term</span><select name="term_id" id="manualTemplateTerm"></select></label>
+          <label class="field full"><span>Class</span><select name="class_id">${optionList(classes,"id","name","","Leave blank")}</select></label>
+        </div>
+        <div class="template-information">
+          <strong>${activeSubjects.length} active subject${activeSubjects.length===1?"":"s"} will be included.</strong>
+          <span>Student details, scores, grades, positions, comments, attendance and conduct fields will remain blank for manual completion.</span>
+        </div>
+      </form>`,
+      `<button class="button ghost" id="manualTemplateCancel" type="button">Cancel</button><button class="button primary" id="manualTemplateDownload" type="button">Download PDF template</button>`,"small");
+    const form=byId("manualTemplateForm");
+    const renderTerms=()=>{
+      const yearId=form.elements.academic_year_id.value;
+      const terms=(state.boot.terms||[]).filter(item=>!item.deleted_at&&(!yearId||item.academic_year_id===yearId));
+      byId("manualTemplateTerm").innerHTML=optionList(terms,"id","name",activeTerm()?.id,"Leave blank");
+    };
+    form.elements.academic_year_id.onchange=renderTerms;
+    renderTerms();
+    byId("manualTemplateCancel").onclick=closeModal;
+    byId("manualTemplateDownload").onclick=async()=>{
+      if(!activeSubjects.length){toast("Template unavailable","Add at least one active subject first.","error");return}
+      const values=formObject(form),button=byId("manualTemplateDownload");
+      const year=years.find(item=>item.id===values.academic_year_id);
+      const term=(state.boot.terms||[]).find(item=>item.id===values.term_id);
+      const classRow=classes.find(item=>item.id===values.class_id);
+      button.disabled=true;button.textContent="Preparing";
+      setLoading(true);
+      try{
+        const pdf=await createManualReportTemplatePdf({
+          academicYearName:year?.name||"",
+          termName:term?.name||"",
+          className:classRow?.name||"",
+          subjects:activeSubjects
+        });
+        const safeClass=(classRow?.name||"All_Classes").replace(/[^A-Za-z0-9_-]+/g,"_");
+        downloadBlob(`NIS_Manual_Report_Card_Template_${safeClass}.pdf`,pdf);
+        closeModal();
+        toast("Manual template downloaded",`${activeSubjects.length} subjects included.`);
+      }catch(error){
+        toast("Template not created",friendlyError(error),"error",6500);
+        await reportClientError(error,{source:"manual_report_template"});
+      }finally{
+        setLoading(false);
+        button.disabled=false;button.textContent="Download PDF template";
+      }
+    };
+  }
+
   async function exportReportList() {
     const data=await rpc("list_report_cards_v6",{target_term_id:byId("reportTerm")?.value||null,target_class_id:byId("reportClass")?.value||null,
       target_status:byId("reportStatus")?.value||null,search_text:byId("reportSearch")?.value||"",archive_filter:byId("reportArchive")?.value||"active",page_number:1,page_size:100});
@@ -2001,56 +2059,309 @@
     const img=box.querySelector("img");if(img)return img;
     return null;
   }
-  async function createReportPdf(editor,publication) {
-    const canvas=document.createElement("canvas");canvas.width=1240;canvas.height=1754;
-    const ctx=canvas.getContext("2d"),school=state.boot.school||{},student=editor.student||{},report=editor.report||{},subjects=editor.subjects||[];
-    const signer=report.id?await rpc("get_report_headteacher_signature",{target_report_id:report.id}).catch(()=>({})):{};
-    let signatureImage=null;if(signer.signature_path){try{signatureImage=await loadImage(await signedUrl(CONFIG.signatureBucket,signer.signature_path,600))}catch(_){signatureImage=null}}
-    ctx.fillStyle="#fff";ctx.fillRect(0,0,canvas.width,canvas.height);
-    ctx.fillStyle=school.primary_colour||"#082d70";ctx.fillRect(0,0,canvas.width,205);
-    const logo=await loadImage(school.logo_url?.startsWith("http")?school.logo_url:CONFIG.logoPath).catch(()=>null);
-    if(logo){ctx.save();ctx.globalAlpha=.055;drawImageContain(ctx,logo,300,500,640,640);ctx.restore();ctx.drawImage(logo,55,28,145,145)};
-    ctx.fillStyle="#fff";ctx.font="bold 46px Arial";ctx.fillText(school.school_name||"Nipe International School",225,75);
-    ctx.font="24px Arial";ctx.fillText(school.motto||"",225,116);
-    ctx.font="bold 30px Arial";ctx.fillText(school.report_title||"Student Terminal Report",225,165);
-    ctx.fillStyle="#15233b";ctx.font="bold 23px Arial";
-    ctx.fillText(`Name: ${student.full_name||""}`,60,255);ctx.fillText(`Admission No.: ${student.admission_no||""}`,710,255);
-    ctx.font="20px Arial";ctx.fillText(`Class: ${student.class_name||""}`,60,298);ctx.fillText(`Academic Year: ${student.academic_year_name||""}`,440,298);ctx.fillText(`Term: ${student.term_name||""}`,880,298);
-    ctx.strokeStyle="#b7c4d6";ctx.lineWidth=1;ctx.strokeRect(55,330,1130,800);
-    const cols=[55,370,765,875,960,1185],headerY=330,rowH=Math.min(46,720/Math.max(subjects.length,1));
-    ctx.fillStyle="#e9f1fc";ctx.fillRect(55,330,1130,52);ctx.fillStyle="#102850";ctx.font="bold 18px Arial";
-    ["Subject","Assessment","Total","Grade","Remark"].forEach((label,i)=>ctx.fillText(label,cols[i]+10,363));
-    ctx.strokeStyle="#cbd5e2";cols.forEach(x=>{ctx.beginPath();ctx.moveTo(x,330);ctx.lineTo(x,1130);ctx.stroke()});
-    let y=382;ctx.font="17px Arial";
-    for(const subject of subjects){
-      ctx.strokeStyle="#dce3ec";ctx.beginPath();ctx.moveTo(55,y+rowH);ctx.lineTo(1185,y+rowH);ctx.stroke();
-      ctx.fillStyle="#172238";ctx.fillText(subject.subject_name,65,y+rowH*.65);
-      const componentText=(subject.components||[]).map(c=>`${c.code}: ${number(c.raw_score,1)}`).join("  ");
-      ctx.font="15px Arial";ctx.fillText(componentText,380,y+rowH*.65);ctx.font="17px Arial";
-      ctx.fillText(number(subject.total_score,1),785,y+rowH*.65);ctx.fillText(subject.grade||"",900,y+rowH*.65);
-      ctx.font="14px Arial";drawWrapped(ctx,subject.remark||"",970,y+rowH*.48,200,15,2);ctx.font="17px Arial";y+=rowH;
+  const REPORT_FONT_FAMILY='"Times New Roman", Times, "Liberation Serif", serif';
+
+  function setReportFont(ctx,size,weight="normal",style="normal") {
+    ctx.font=`${style} ${weight} ${size}px ${REPORT_FONT_FAMILY}`;
+  }
+
+  function drawCenteredReportText(ctx,text,x1,x2,y) {
+    const value=String(text??"");
+    ctx.fillText(value,x1+(x2-x1-ctx.measureText(value).width)/2,y);
+  }
+
+  function drawRightReportText(ctx,text,right,y) {
+    const value=String(text??"");
+    ctx.fillText(value,right-ctx.measureText(value).width,y);
+  }
+
+  function fitReportText(ctx,text,maxWidth,preferredSize=22,minimumSize=14,weight="normal") {
+    const value=String(text??"");
+    let size=preferredSize;
+    while(size>minimumSize){
+      setReportFont(ctx,size,weight);
+      if(ctx.measureText(value).width<=maxWidth)break;
+      size-=1;
     }
-    const avg=subjects.length?subjects.reduce((s,x)=>s+Number(x.total_score||0),0)/subjects.length:0;
-    const position=report.id?await rpc("report_position",{target_report_id:report.id}).catch(()=>({position:0,class_size:0})):{position:0,class_size:0};
-    ctx.fillStyle="#f4f7fb";ctx.fillRect(55,1155,1130,160);ctx.fillStyle="#172238";ctx.font="bold 22px Arial";
-    ctx.fillText(`Average: ${number(avg,1)}%`,75,1198);ctx.fillText(`Attendance: ${report.days_present||0} / ${report.days_school_opened||0}`,430,1198);
-    ctx.fillText(position.position?`Position: ${position.position} / ${position.class_size}`:`Status: ${String(report.status||"").toUpperCase()}`,850,1198);
-    ctx.font="18px Arial";ctx.fillText(`Attitude: ${report.attitude||"—"}`,75,1242);ctx.fillText(`Conduct: ${report.conduct||"—"}`,430,1242);ctx.fillText(`Interest: ${report.interest||"—"}`,850,1242);
-    ctx.font="bold 17px Arial";ctx.fillText("Class Teacher's Comment",60,1360);ctx.font="17px Arial";drawWrapped(ctx,report.teacher_comment||"",60,1390,760,25,3);
-    ctx.font="bold 17px Arial";ctx.fillText("Principal's Comment",60,1485);ctx.font="17px Arial";drawWrapped(ctx,report.head_comment||"",60,1515,520,25,3);
-    if(signatureImage)drawImageContain(ctx,signatureImage,610,1480,260,105);
-    ctx.strokeStyle="#45556f";ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(610,1595);ctx.lineTo(875,1595);ctx.stroke();ctx.fillStyle="#172238";ctx.font="bold 15px Arial";ctx.fillText(signer.full_name||school.head_name||"Principal",610,1620);ctx.font="13px Arial";ctx.fillStyle="#5a687d";ctx.fillText(signatureImage?"Digitally signed by the Principal":"Principal",610,1642);
-    const base=school.verification_base_url||`${location.origin}${location.pathname}`;
-    const verifyUrl=`${base}${base.includes("?")?"&":"?"}verify=${publication.verification_token}`;
-    const qr=await qrCanvas(verifyUrl);
-    if(qr)ctx.drawImage(qr,920,1365,210,210);
-    ctx.fillStyle="#3f4e66";ctx.font="14px Arial";ctx.fillText(`Report No.: ${report.report_number||""}`,60,1668);
-    ctx.fillText(`Published: ${isoDateTime(publication.published_at)}`,60,1695);
-    ctx.fillText(`Verification: ${String(publication.verification_token).slice(0,18)}…`,920,1608);
-    ctx.strokeStyle=school.primary_colour||"#082d70";ctx.lineWidth=7;ctx.beginPath();ctx.moveTo(0,1738);ctx.lineTo(1240,1738);ctx.stroke();
-    const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",.92));
+    return size;
+  }
+
+  function drawReportCellText(ctx,text,x1,x2,yCenter,{align="left",preferredSize=21,minimumSize=13,weight="normal",colour="#172238"}={}) {
+    const value=String(text??"");
+    fitReportText(ctx,value,Math.max(10,x2-x1-16),preferredSize,minimumSize,weight);
+    ctx.fillStyle=colour;
+    ctx.textBaseline="middle";
+    const width=ctx.measureText(value).width;
+    const x=align==="center"?x1+(x2-x1-width)/2:align==="right"?x2-width-8:x1+8;
+    ctx.fillText(value,x,yCenter);
+    ctx.textBaseline="alphabetic";
+  }
+
+  function ordinalReportPosition(value) {
+    const n=Number(value||0);
+    if(!n)return "";
+    const mod100=n%100;
+    if(mod100>=11&&mod100<=13)return `${n}th`;
+    return `${n}${n%10===1?"st":n%10===2?"nd":n%10===3?"rd":"th"}`;
+  }
+
+  function subjectScoreBreakdown(subject) {
+    const components=(subject.components||[]).filter(item=>item);
+    const componentValue=item=>{
+      const weighted=Number(item.weighted_score);
+      if(Number.isFinite(weighted)&&weighted!==0)return weighted;
+      const raw=Number(item.raw_score);
+      return Number.isFinite(raw)?raw:0;
+    };
+    const examMatcher=/(exam|examination|final)/i;
+    let examComponents=components.filter(item=>examMatcher.test(`${item.name||""} ${item.code||""}`));
+    if(!examComponents.length&&components.length>1)examComponents=[components[components.length-1]];
+    const examIds=new Set(examComponents.map(item=>item.component_id||item.id||item.code||item.name));
+    let examScore=examComponents.reduce((sum,item)=>sum+componentValue(item),0);
+    let classScore=components.filter(item=>!examIds.has(item.component_id||item.id||item.code||item.name))
+      .reduce((sum,item)=>sum+componentValue(item),0);
+    const total=Number(subject.total_score||0);
+    if(!components.length){classScore=0;examScore=total}
+    const computed=classScore+examScore;
+    if(total&&Math.abs(computed-total)>.2){
+      if(examScore<=total)classScore=Math.max(0,total-examScore);
+      else{examScore=Math.max(0,total-classScore)}
+    }
+    return {classScore,examScore,total};
+  }
+
+  function reportSubjectRanks(subjects) {
+    const distinct=[...new Set(subjects.map(item=>Number(item.total_score||0)))].sort((a,b)=>b-a);
+    return new Map(subjects.map(item=>[
+      item.subject_id||item.subject_name,
+      ordinalReportPosition(distinct.indexOf(Number(item.total_score||0))+1)
+    ]));
+  }
+
+  async function resolveReportImageAssets({student={},reportId=null,manual=false}={}) {
+    const school=state.boot.school||{};
+    const logo=await loadImage(school.logo_url?.startsWith("http")?school.logo_url:CONFIG.logoPath).catch(()=>null);
+    let studentImage=null;
+    if(!manual&&student.photo_url){
+      try{studentImage=await loadImage(await signedUrl(CONFIG.photoBucket,student.photo_url,900))}catch(_){studentImage=null}
+    }
+    const signer=manual
+      ?await rpc("get_current_principal_signature").catch(()=>({full_name:school.head_name||"Principal",signature_path:""}))
+      :reportId
+        ?await rpc("get_report_headteacher_signature",{target_report_id:reportId}).catch(()=>({full_name:school.head_name||"Principal",signature_path:""}))
+        :{full_name:school.head_name||"Principal",signature_path:""};
+    let signatureImage=null;
+    if(signer.signature_path){
+      try{signatureImage=await loadImage(await signedUrl(CONFIG.signatureBucket,signer.signature_path,900))}catch(_){signatureImage=null}
+    }
+    return {logo,studentImage,signer,signatureImage};
+  }
+
+  async function drawPreferredTerminalReport({
+    student={},report={},subjects=[],publication=null,manual=false,templateMeta={},assets={}
+  }) {
+    const canvas=document.createElement("canvas");
+    canvas.width=1240;canvas.height=1754;
+    const ctx=canvas.getContext("2d"),school=state.boot.school||{};
+    const navy=school.primary_colour||"#153f7c";
+    const accent=school.accent_colour||"#ef7f2c";
+    const pale="#eaf2fc";
+    const line="#afc2dc";
+    const {logo,studentImage,signer={},signatureImage}=assets;
+
+    ctx.fillStyle="#ffffff";ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    // Professional double security border.
+    ctx.strokeStyle="#182c4c";ctx.lineWidth=7;ctx.strokeRect(12,12,1216,1730);
+    ctx.strokeStyle="#647b9c";ctx.lineWidth=2;ctx.strokeRect(28,28,1184,1698);
+
+    // Header.
+    ctx.fillStyle=navy;ctx.fillRect(40,42,1160,205);
+    if(logo)drawImageContain(ctx,logo,62,65,145,145);
+    ctx.fillStyle="#ffffff";
+    setReportFont(ctx,38,"bold");
+    drawCenteredReportText(ctx,(school.school_name||"NIPE INTERNATIONAL SCHOOL").toUpperCase(),220,1020,92);
+    setReportFont(ctx,17,"normal");
+    drawCenteredReportText(ctx,school.motto||"Discipline, Commitment, Excellence",220,1020,124);
+    const contact=[school.address,school.phone,school.email].filter(Boolean).join("  |  ");
+    setReportFont(ctx,15,"normal");
+    drawCenteredReportText(ctx,contact,220,1020,151);
+    setReportFont(ctx,25,"bold");
+    drawCenteredReportText(ctx,manual?"STUDENT TERMINAL REPORT - MANUAL TEMPLATE":school.report_title||"STUDENT TERMINAL REPORT",220,1020,202);
+
+    // Student photograph or manual photo box.
+    ctx.fillStyle="#ffffff";ctx.fillRect(1035,62,135,160);
+    ctx.strokeStyle="#ffffff";ctx.lineWidth=3;ctx.strokeRect(1035,62,135,160);
+    if(studentImage)drawImageContain(ctx,studentImage,1039,66,127,152);
+    else{
+      ctx.fillStyle="#e9eef5";ctx.fillRect(1039,66,127,152);
+      ctx.fillStyle="#51627b";setReportFont(ctx,14,"bold");
+      drawCenteredReportText(ctx,manual?"STUDENT PHOTO":"NO PHOTO",1039,1166,147);
+    }
+
+    // Student identity.
+    ctx.fillStyle="#172238";setReportFont(ctx,21,"bold");
+    ctx.fillText(`Name: ${manual?"________________________________________":student.full_name||""}`,42,286);
+    drawRightReportText(ctx,`Admission No.: ${manual?"________________":student.admission_no||""}`,1197,286);
+    setReportFont(ctx,20,"bold");
+    ctx.fillText(`Class: ${manual?(templateMeta.className||"________________"):student.class_name||""}`,42,333);
+    drawCenteredReportText(ctx,`Academic Year: ${manual?(templateMeta.academicYearName||"____________"):student.academic_year_name||""}`,370,870,333);
+    drawRightReportText(ctx,`Term: ${manual?(templateMeta.termName||"________"):student.term_name||""}`,1197,333);
+
+    // Watermark behind the results table.
+    if(logo){
+      ctx.save();ctx.globalAlpha=.075;drawImageContain(ctx,logo,405,590,430,430);ctx.restore();
+    }
+
+    const tableTop=360;
+    const headerHeight=48;
+    const minimumRows=15;
+    const rowCount=Math.max(subjects.length,minimumRows);
+    const availableRowsHeight=760;
+    const rowHeight=Math.max(30,Math.min(48,Math.floor(availableRowsHeight/Math.max(rowCount,1))));
+    const tableBottom=tableTop+headerHeight+rowHeight*rowCount;
+    const columns=[40,285,465,645,795,895,1015,1200];
+    const labels=["SUBJECT","CLASS SCORE","EXAMS SCORE","TOTAL","GRADE","POSITION","REMARKS"];
+
+    ctx.fillStyle=pale;ctx.fillRect(40,tableTop,1160,headerHeight);
+    ctx.strokeStyle=line;ctx.lineWidth=1.2;ctx.strokeRect(40,tableTop,1160,headerHeight+rowHeight*rowCount);
+    columns.forEach(x=>{ctx.beginPath();ctx.moveTo(x,tableTop);ctx.lineTo(x,tableBottom);ctx.stroke()});
+    setReportFont(ctx,17,"bold");ctx.fillStyle="#102850";
+    labels.forEach((label,index)=>drawCenteredReportText(ctx,label,columns[index],columns[index+1],tableTop+31));
+
+    const ranks=manual?new Map():reportSubjectRanks(subjects);
+    for(let index=0;index<rowCount;index++){
+      const rowY=tableTop+headerHeight+rowHeight*index;
+      ctx.strokeStyle=line;ctx.beginPath();ctx.moveTo(40,rowY+rowHeight);ctx.lineTo(1200,rowY+rowHeight);ctx.stroke();
+      if(index%2===1){ctx.fillStyle="rgba(234,242,252,.18)";ctx.fillRect(40,rowY,1160,rowHeight)}
+      const subject=subjects[index];
+      if(!subject)continue;
+      const centre=rowY+rowHeight/2;
+      const breakdown=manual?{classScore:null,examScore:null,total:null}:subjectScoreBreakdown(subject);
+      const score=value=>value===null||value===undefined?"":number(value,1);
+      drawReportCellText(ctx,subject.subject_name||subject.name||"",columns[0],columns[1],centre,{preferredSize:20,minimumSize:13});
+      drawReportCellText(ctx,score(breakdown.classScore),columns[1],columns[2],centre,{align:"center",preferredSize:20});
+      drawReportCellText(ctx,score(breakdown.examScore),columns[2],columns[3],centre,{align:"center",preferredSize:20});
+      drawReportCellText(ctx,score(breakdown.total),columns[3],columns[4],centre,{align:"center",preferredSize:20,weight:"bold",colour:manual?"#172238":"#d61f26"});
+      drawReportCellText(ctx,manual?"":subject.grade||"",columns[4],columns[5],centre,{align:"center",preferredSize:20,weight:"bold",colour:"#139a6a"});
+      drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id||subject.subject_name)||"",columns[5],columns[6],centre,{align:"center",preferredSize:19,colour:"#d61f26"});
+      drawReportCellText(ctx,manual?"":subject.remark||"",columns[6],columns[7],centre,{preferredSize:18,minimumSize:12});
+    }
+
+    // Summary.
+    const summaryTop=tableBottom;
+    ctx.fillStyle=pale;ctx.fillRect(40,summaryTop,1160,112);
+    ctx.strokeStyle=line;ctx.strokeRect(40,summaryTop,1160,112);
+    const average=manual?"":subjects.length?subjects.reduce((sum,item)=>sum+Number(item.total_score||0),0)/subjects.length:0;
+    const position=manual?{position:0,class_size:0}:report.id
+      ?await rpc("report_position",{target_report_id:report.id}).catch(()=>({position:0,class_size:0}))
+      :{position:0,class_size:0};
+    ctx.fillStyle="#172238";setReportFont(ctx,20,"bold");
+    ctx.fillText(`Average: ${manual?"____________":`${number(average,1)}%`}`,48,summaryTop+31);
+    drawCenteredReportText(ctx,`Attendance: ${manual?"______ / ______":`${report.days_present||0} / ${report.days_school_opened||0}`}`,360,850,summaryTop+31);
+    drawRightReportText(ctx,`Overall Position: ${manual?"______ / ______":position.position?`${position.position} / ${position.class_size}`:"—"}`,1192,summaryTop+31);
+    setReportFont(ctx,18,"bold");
+    ctx.fillText(`Attitude: ${manual?"____________________":report.attitude||"—"}`,48,summaryTop+78);
+    drawCenteredReportText(ctx,`Conduct: ${manual?"____________________________":report.conduct||"—"}`,350,865,summaryTop+78);
+    drawRightReportText(ctx,`Interest: ${manual?"____________________":report.interest||"—"}`,1192,summaryTop+78);
+
+    // Comments and signature.
+    const commentsTop=summaryTop+135;
+    ctx.fillStyle="#172238";setReportFont(ctx,17,"bold");
+    ctx.fillText("Class Teacher's Comment",45,commentsTop);
+    setReportFont(ctx,17,"normal");
+    if(manual){
+      ctx.strokeStyle="#93a6bf";ctx.lineWidth=1;
+      [commentsTop+33,commentsTop+65].forEach(y=>{ctx.beginPath();ctx.moveTo(45,y);ctx.lineTo(790,y);ctx.stroke()});
+    }else{
+      drawWrapped(ctx,report.teacher_comment||"",45,commentsTop+26,745,21,3);
+    }
+
+    const principalTop=commentsTop+105;
+    setReportFont(ctx,17,"bold");ctx.fillStyle="#172238";ctx.fillText("Principal's Comment",45,principalTop);
+    setReportFont(ctx,17,"normal");
+    if(manual){
+      ctx.strokeStyle="#93a6bf";
+      [principalTop+33,principalTop+65].forEach(y=>{ctx.beginPath();ctx.moveTo(45,y);ctx.lineTo(650,y);ctx.stroke()});
+    }else{
+      drawWrapped(ctx,report.head_comment||"",45,principalTop+26,600,21,3);
+    }
+
+    // Principal signature.
+    const signatureX=560,signatureY=principalTop+20;
+    if(signatureImage)drawImageContain(ctx,signatureImage,signatureX,signatureY,260,95);
+    ctx.strokeStyle="#45556f";ctx.lineWidth=1.3;ctx.beginPath();ctx.moveTo(signatureX,signatureY+105);ctx.lineTo(signatureX+270,signatureY+105);ctx.stroke();
+    ctx.fillStyle="#172238";setReportFont(ctx,16,"bold");
+    drawCenteredReportText(ctx,signer.full_name||school.head_name||"Principal",signatureX,signatureX+270,signatureY+128);
+    setReportFont(ctx,13,"normal");ctx.fillStyle="#5a687d";
+    drawCenteredReportText(ctx,manual?(signatureImage?"Template authorised by the Principal":"Principal signature"):(signatureImage?"Digitally signed by the Principal":"Principal"),signatureX,signatureX+270,signatureY+149);
+
+    // QR verification or school-portal QR for a manual template.
+    const base=school.verification_base_url||school.website||`${location.origin}${location.pathname}`;
+    const qrText=manual?base:`${base}${base.includes("?")?"&":"?"}verify=${publication?.verification_token||""}`;
+    const qr=await qrCanvas(qrText);
+    if(qr)ctx.drawImage(qr,940,commentsTop+12,205,205);
+    ctx.fillStyle="#3f4e66";setReportFont(ctx,12,"normal");
+    drawCenteredReportText(ctx,manual?"School portal":"Scan to verify",930,1155,commentsTop+230);
+
+    // Identification and anti-tamper footer.
+    const footerY=1660;
+    ctx.fillStyle="#53647c";setReportFont(ctx,12,"normal");
+    ctx.fillText(`Report No.: ${manual?"MANUAL-TEMPLATE":report.report_number||""}`,45,footerY);
+    drawRightReportText(ctx,manual?`Generated: ${new Date().toLocaleDateString("en-GH")}`:`Date Issued: ${publication?.published_at?isoDate(publication.published_at):isoDate(new Date())}`,1195,footerY);
+    if(!manual&&publication?.verification_token){
+      drawRightReportText(ctx,`Verification: ${String(publication.verification_token).slice(0,18)}…`,1195,footerY+24);
+    }
+    ctx.fillStyle=accent;ctx.fillRect(40,footerY+42,1160,8);
+    ctx.fillStyle="#111827";setReportFont(ctx,14,"bold","italic");
+    drawCenteredReportText(ctx,"N.B.: Any alteration, cancellation or erasing of any part of this report renders it void.",40,1200,footerY+79);
+    ctx.strokeStyle="#182c4c";ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(40,footerY+95);ctx.lineTo(1200,footerY+95);ctx.stroke();
+
+    return canvas;
+  }
+
+  async function createReportPdf(editor,publication) {
+    const assets=await resolveReportImageAssets({
+      student:editor.student||{},
+      reportId:editor.report?.id||null,
+      manual:false
+    });
+    const canvas=await drawPreferredTerminalReport({
+      student:editor.student||{},
+      report:editor.report||{},
+      subjects:editor.subjects||[],
+      publication,
+      manual:false,
+      assets
+    });
+    const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",.96));
     return imagePdf(jpeg,595.28,841.89);
   }
+
+  async function createManualReportTemplatePdf({academicYearName="",termName="",className="",subjects=[]}={}) {
+    const assets=await resolveReportImageAssets({manual:true});
+    const templateSubjects=subjects.map(subject=>({
+      subject_id:subject.id,
+      subject_name:subject.name,
+      subject_code:subject.code,
+      total_score:null,
+      grade:"",
+      remark:"",
+      components:[]
+    }));
+    const canvas=await drawPreferredTerminalReport({
+      student:{full_name:"",admission_no:"",class_name:className,academic_year_name:academicYearName,term_name:termName,photo_url:""},
+      report:{days_present:null,days_school_opened:null,attitude:"",conduct:"",interest:"",teacher_comment:"",head_comment:""},
+      subjects:templateSubjects,
+      publication:null,
+      manual:true,
+      templateMeta:{academicYearName,termName,className},
+      assets
+    });
+    const jpeg=await new Promise(resolve=>canvas.toBlob(resolve,"image/jpeg",.96));
+    return imagePdf(jpeg,595.28,841.89);
+  }
+
   async function imagePdf(jpegBlob,pageWidth,pageHeight) {
     const jpeg=new Uint8Array(await jpegBlob.arrayBuffer()),parts=[],offsets=[0];let length=0;
     const add=value=>{const bytes=typeof value==="string"?new TextEncoder().encode(value):value;parts.push(bytes);length+=bytes.length};
