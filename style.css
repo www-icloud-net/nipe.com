@@ -637,7 +637,7 @@ td{font-size:13px}
 .docx-template-render-host section.nis-docx-template{box-shadow:none!important;margin:0!important}
 @media(max-width:1050px){.report-template-grid{grid-template-columns:1fr}}
 
-/* Enterprise v6.6.5 compact academic lists and exact template preview */
+/* Enterprise v6.6.6 compact academic lists and exact template preview */
 .academic-list-scroll{
   max-height:520px;
   overflow-x:auto;

@@ -730,9 +730,7 @@
   }
   function canRemoveReportRow(row) {
     if(!can("remove_reports")||row?.archived)return false;
-    const currentRole=role(),status=String(row?.status||"draft");
-    if(currentRole==="system_admin")return true;
-    return ["class_teacher","subject_teacher"].includes(currentRole)&&["draft","returned"].includes(status);
+    return ["system_admin","class_teacher","subject_teacher"].includes(role());
   }
   function reportTable(rows,compact=false,manage=false) {
     if(!rows.length)return `<div class="empty"><strong>No report cards</strong><span>Records will appear here when available.</span></div>`;
@@ -744,8 +742,7 @@
       <td>${statusBadge(row.archived?"archived":row.status)}</td><td>${isoDateTime(row.updated_at)}</td>
       ${compact?"":`<td><div class="table-actions">
         ${!row.archived?`<button class="button secondary small" data-report-id="${attr(row.id)}">Open</button>`:""}
-        ${manage&&canRemoveReportRow(row)?`<button class="button danger small" data-report-archive="${attr(row.id)}">Remove</button>`:""}
-        ${manage&&can("restore_reports")&&row.archived?`<button class="button success small" data-report-restore="${attr(row.id)}">Restore</button>`:""}
+        ${manage&&canRemoveReportRow(row)?`<button class="button danger small" data-report-archive="${attr(row.id)}">Delete permanently</button>`:""}
       </div></td>`}
       </tr>`).join("")}</tbody></table></div>`;
   }
@@ -1606,7 +1603,6 @@
           <select id="reportClass">${optionList(state.boot.classes||[],"id","name",state.reportClassFilter||"","All classes")}</select>
           <select id="reportStatus"><option value="">All statuses</option>
             ${["draft","submitted","class_reviewed","approved","published","returned","withdrawn"].map(v=>`<option value="${v}">${v.replaceAll("_"," ")}</option>`).join("")}</select>
-          ${can("remove_reports")?`<select id="reportArchive"><option value="active">Current reports</option><option value="archived">Removed reports</option><option value="all">All reports</option></select>`:""}
         </div>
         <div id="reportResults"><div class="empty">Loading report cards</div></div>
       </section>`;
@@ -1616,7 +1612,7 @@
     byId("reportExport")?.addEventListener("click",exportReportList);
     let timer;
     byId("reportSearch").oninput=()=>{clearTimeout(timer);timer=setTimeout(()=>{state.reportPage=1;loadReportPage(token)},250)};
-    ["reportTerm","reportClass","reportStatus","reportArchive"].forEach(id=>{if(byId(id))byId(id).onchange=()=>{state.reportPage=1;loadReportPage(token)}});
+    ["reportTerm","reportClass","reportStatus"].forEach(id=>{if(byId(id))byId(id).onchange=()=>{state.reportPage=1;loadReportPage(token)}});
     await loadReportPage(token);
   }
   async function loadReportPage(token=state.viewToken) {
@@ -1625,24 +1621,31 @@
     const data=await rpc("list_report_cards_v6",{
       target_term_id:byId("reportTerm")?.value||null,target_class_id:byId("reportClass")?.value||null,
       target_status:byId("reportStatus")?.value||null,search_text:byId("reportSearch")?.value.trim()||"",
-      archive_filter:byId("reportArchive")?.value||"active",page_number:state.reportPage,page_size:CONFIG.pageSize
+      archive_filter:"active",page_number:state.reportPage,page_size:CONFIG.pageSize
     });
     if(token!==state.viewToken||!byId("reportResults"))return;
     root.innerHTML=reportTable(data.rows||[],false,true)+pagination(data.total,data.page,data.page_size,"report");
     $$("[data-report-id]",root).forEach(btn=>btn.onclick=()=>openReportEditor(btn.dataset.reportId));
     $$("[data-report-archive]",root).forEach(btn=>btn.onclick=()=>archiveReportCard(btn.dataset.reportArchive));
-    $$("[data-report-restore]",root).forEach(btn=>btn.onclick=()=>restoreReportCard(btn.dataset.reportRestore));
     bindPagination("report",data);
   }
   async function archiveReportCard(id) {
-    const ok=await confirmAction("Remove Report Card","The report will be removed from active records while its revision and audit history remain preserved.","Remove",true);if(!ok)return;
-    try{await rpc("archive_report_card",{target_report_id:id,reason_text:"Report card removed from active records"});state.workspace=null;toast("Report card removed");await loadReportPage()}
-    catch(error){toast("Report card not removed",friendlyError(error),"error",6500)}
-  }
-  async function restoreReportCard(id) {
-    const ok=await confirmAction("Restore Report Card","The report will return to the active report workflow.","Restore");if(!ok)return;
-    try{await rpc("restore_report_card",{target_report_id:id,reason_text:"Report card restored to active records"});state.workspace=null;toast("Report card restored");await loadReportPage()}
-    catch(error){toast("Report card not restored",friendlyError(error),"error",6500)}
+    const ok=await confirmAction("Permanently Delete Report Card","This permanently deletes the report, scores, revisions, workflow history, publication records, stored PDFs, and related audit history. This action cannot be undone.","Delete permanently",true);if(!ok)return;
+    setLoading(true);
+    try{
+      const paths=(await rpc("list_report_pdf_paths",{target_report_id:id})||[]).filter(Boolean);
+      if(paths.length){
+        const {error}=await state.client.storage.from(CONFIG.pdfBucket).remove(paths);
+        if(error)throw error;
+        paths.forEach(path=>state.pdfUrls.delete(path));
+      }
+      await rpc("delete_report_card_permanently",{target_report_id:id,reason_text:"Report card permanently deleted"});
+      state.workspace=null;
+      if(state.reportEditor?.report?.id===id)state.reportEditor=null;
+      toast("Report card permanently deleted");
+      if(byId("reportResults"))await loadReportPage();
+    }catch(error){toast("Report card not deleted",friendlyError(error),"error",6500)}
+    finally{setLoading(false)}
   }
 
   async function openNewReportPicker() {
@@ -1708,8 +1711,8 @@
       <div class="page-head"><div><h3>${esc(student.full_name)}</h3><p>${esc(student.admission_no)} • ${esc(student.class_name)} • ${esc(student.academic_year_name)} • ${esc(student.term_name)}</p></div>
         <div class="page-actions"><button class="button ghost" id="reportBack">Back to reports</button>
           ${report.id?`<button class="button outline" id="reportHistory">Revisions</button>`:""}
-          ${publication?.storage_path?`<button class="button outline" id="reportDownload">Download PDF</button>`:""}
-          ${report.id&&canRemoveReportRow(report)?`<button class="button danger" id="reportRemove">Remove</button>`:""}
+          ${publication?`<button class="button outline" id="reportDownload">Download latest PDF</button>`:""}
+          ${report.id&&canRemoveReportRow(report)?`<button class="button danger" id="reportRemove">Delete permanently</button>`:""}
         </div></div>
       <div class="report-layout">
         <section class="panel">
@@ -1748,7 +1751,7 @@
       </div>`;
     byId("reportBack").onclick=()=>navigate("reports",true);
     byId("reportHistory")?.addEventListener("click",openRevisionHistory);
-    byId("reportDownload")?.addEventListener("click",()=>downloadOfficialPdf(publication));
+    byId("reportDownload")?.addEventListener("click",()=>downloadLatestOfficialPdf(report.id));
     byId("reportRemove")?.addEventListener("click",async()=>{const id=report.id;await archiveReportCard(id);if(state.view==="reports")await navigate("reports",true)});
     byId("reportSave")?.addEventListener("click",saveOpenReport);
     byId("reportGenerateComments")?.addEventListener("click",()=>applyAutomaticComments(true));
@@ -1847,7 +1850,7 @@
     if(allowed.has("submitted"))buttons.push(`<button class="button secondary full" data-transition="submitted">Submit for Principal approval</button>`);
     if(allowed.has("class_reviewed"))buttons.push(`<button class="button success full" data-transition="class_reviewed">Complete class review</button>`);
     if(allowed.has("approved"))buttons.push(`<button class="button success full" data-transition="approved">Approve report</button>`);
-    if(allowed.has("published"))buttons.push(`<button class="button success full" data-transition="published">Publish report</button>`);
+    if(allowed.has("published"))buttons.push(`<button class="button success full" data-transition="published">${report.status==="withdrawn"?"Republish report":"Publish report"}</button>`);
     if(allowed.has("returned"))buttons.push(`<button class="button warning full" data-transition="returned">Return for correction</button>`);
     if(report.status==="published"&&!publication?.storage_path&&can("publish_reports"))buttons.push(`<button class="button primary full" id="reportGeneratePdf">Create official PDF</button>`);
     if(["published","approved"].includes(report.status)&&can("approve_reports"))buttons.push(`<button class="button warning full" id="reportCorrection">Open correction</button>`);
@@ -1909,14 +1912,14 @@
     } finally{if(button)button.disabled=false}
   }
   async function requestTransition(targetStatus) {
-    const labels={submitted:"Submit report",class_reviewed:"Complete review",approved:"Approve report",published:"Publish report",returned:"Return report",withdrawn:"Withdraw publication"};
+    const labels={submitted:"Submit report",class_reviewed:"Complete review",approved:"Approve report",published:state.reportEditor?.report?.status==="withdrawn"?"Republish report":"Publish report",returned:"Return report",withdrawn:"Withdraw publication"};
     modal(labels[targetStatus]||"Update report status","",`<label class="field"><span>Comment</span><textarea id="workflowComment"></textarea></label>`,
       `<button class="button ghost" id="workflowCancel" type="button">Cancel</button><button class="button ${targetStatus==="withdrawn"?"danger":"primary"}" id="workflowConfirm" type="button">${esc(labels[targetStatus]||"Continue")}</button>`,"small");
     byId("workflowCancel").onclick=closeModal;
     byId("workflowConfirm").onclick=async()=>{
       const comment=byId("workflowComment").value.trim(),button=byId("workflowConfirm");button.disabled=true;
       try{
-        if(state.reportEditor.can_edit&&["submitted"].includes(targetStatus))await saveOpenReport();
+        if(state.reportEditor.can_edit&&(targetStatus==="submitted"||(targetStatus==="published"&&state.reportEditor.report.status==="withdrawn")))await saveOpenReport();
         const updated=await rpc("transition_report_status",{target_report_id:state.reportEditor.report.id,target_status:targetStatus,
           comment_text:comment,expected_version:state.reportEditor.report.version});
         state.workspace=null;state.reportEditor=updated;closeModal();toast("Report status updated");
@@ -2041,7 +2044,7 @@
 
   async function exportReportList() {
     const data=await rpc("list_report_cards_v6",{target_term_id:byId("reportTerm")?.value||null,target_class_id:byId("reportClass")?.value||null,
-      target_status:byId("reportStatus")?.value||null,search_text:byId("reportSearch")?.value||"",archive_filter:byId("reportArchive")?.value||"active",page_number:1,page_size:100});
+      target_status:byId("reportStatus")?.value||null,search_text:byId("reportSearch")?.value||"",archive_filter:"active",page_number:1,page_size:100});
     const headers=["report_number","student_name","admission_no","class_name","academic_year_name","term_name","average","status","updated_at"];
     downloadText("report-cards.csv",[headers.join(","),...(data.rows||[]).map(row=>headers.map(h=>csvCell(row[h])).join(","))].join("\n"),"text/csv");
   }
@@ -2105,11 +2108,31 @@
     }catch(error){toast("PDF not created",friendlyError(error),"error");await reportClientError(error,{source:"pdf",report_id:editor.report.id})}
     finally{setLoading(false)}
   }
-  async function downloadOfficialPdf(publication) {
+  async function downloadLatestOfficialPdf(reportId) {
+    if(!reportId)return;
+    setLoading(true);
     try{
-      const url=await signedUrl(CONFIG.pdfBucket,publication.storage_path,120);
-      const a=document.createElement("a");a.href=url;a.target="_blank";a.rel="noopener";a.click();
-    }catch(error){toast("PDF unavailable",friendlyError(error),"error")}
+      const editor=state.reportEditor?.report?.id===reportId
+        ?state.reportEditor
+        :await rpc("get_report_editor",{target_report_id:reportId,target_enrollment_id:null,target_term_id:null});
+      const publication=(editor.publications||[]).find(item=>!item.revoked_at);
+      if(!publication)throw new Error("Active publication record not found");
+      let pdf,safeName=(editor.report.report_number||editor.report.id).replace(/[^A-Za-z0-9_-]/g,"_");
+      const canRefreshStoredPdf=can("publish_reports")&&["system_admin","class_teacher","subject_teacher"].includes(role());
+      if(canRefreshStoredPdf){
+        const generated=await createAndStoreOfficialPdf(editor,publication);
+        pdf=generated.pdf;safeName=generated.safeName;
+        if(state.reportEditor?.report?.id===reportId){
+          state.reportEditor=await rpc("get_report_editor",{target_report_id:reportId,target_enrollment_id:null,target_term_id:null});
+          renderReportEditor();
+        }
+      }else{
+        pdf=await createReportPdf(editor,publication);
+      }
+      downloadBlob(`${safeName}.pdf`,pdf);
+      toast("Latest official PDF downloaded","Current positions, colours, typography, photograph, template, and Principal signature were applied.");
+    }catch(error){toast("PDF unavailable",friendlyError(error),"error",6500);await reportClientError(error,{source:"latest_pdf_download",report_id:reportId})}
+    finally{setLoading(false)}
   }
   function downloadBlob(filename,blob) {
     const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1500);
@@ -2924,14 +2947,11 @@
         ${children.length?children.map(child=>`<section class="panel">
           <div class="panel-header"><div class="cell-copy"><strong>${esc(child.full_name)}</strong><small>${esc(child.admission_no)} • ${esc(child.class_name||"")}</small></div></div>
           <div class="panel-body">${(child.reports||[]).length?(child.reports||[]).map(report=>`<div class="diff-row"><span><strong>${esc(report.term_name)}</strong><br><small>${esc(report.academic_year_name)} • ${number(report.average,1)}%</small></span>
-            <div class="button-row"><button class="button outline small" data-child-report="${attr(report.id)}">View report</button>${report.publication?.storage_path?`<button class="button secondary small" data-child-pdf="${attr(report.id)}">Download PDF</button>`:""}</div></div>`).join(""):`<div class="empty"><strong>No published reports</strong></div>`}</div>
+            <div class="button-row"><button class="button outline small" data-child-report="${attr(report.id)}">View report</button>${report.publication?`<button class="button secondary small" data-child-pdf="${attr(report.id)}">Download latest PDF</button>`:""}</div></div>`).join(""):`<div class="empty"><strong>No published reports</strong></div>`}</div>
         </section>`).join(""):`<section class="panel pad empty"><strong>No linked student report records</strong><span>Ask the System Administrator to verify the parent-student link.</span></section>`}
       </div>`;
     $$('[data-child-report]').forEach(button=>button.onclick=()=>openReportEditor(button.dataset.childReport));
-    $$('[data-child-pdf]').forEach(button=>button.onclick=()=>{
-      const report=children.flatMap(child=>child.reports||[]).find(item=>item.id===button.dataset.childPdf);
-      if(report?.publication?.storage_path)downloadOfficialPdf(report.publication);
-    });
+    $$('[data-child-pdf]').forEach(button=>button.onclick=()=>downloadLatestOfficialPdf(button.dataset.childPdf));
   }
 
   async function renderTeachers(token) {
