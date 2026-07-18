@@ -1260,15 +1260,51 @@
       (state.academic.subjects||[]).find(x=>x.id===row.subject_id)?.name
     ].filter(Boolean).join(" • ")||"School-wide";
   }
+  function promotionCutoffOptions(selected=50) {
+    return Array.from({length:21},(_,index)=>40+index).map(score=>`<option value="${score}" ${Number(selected)===score?"selected":""}>${score}%</option>`).join("");
+  }
+  function configuredNextClass(sourceClassId) {
+    const classes=[...(state.academic?.classes||state.boot?.classes||[])].filter(row=>row.active!==false&&!row.deleted_at)
+      .sort((a,b)=>Number(a.level_order||0)-Number(b.level_order||0)||String(a.name||"").localeCompare(String(b.name||""),undefined,{numeric:true}));
+    const source=classes.find(row=>row.id===sourceClassId);if(!source)return null;
+    return classes.find(row=>Number(row.level_order||0)>Number(source.level_order||0))||null;
+  }
   function renderPromotionTab() {
-    return `<section class="panel pad"><div class="page-head"><div><h3>Class Promotion</h3><p>Create next-year enrolments as one controlled operation</p></div></div>
-      <form id="promotionForm" class="form-grid">
-        <label class="field"><span>Source academic year</span><select name="source_year" required>${optionList(state.academic.academic_years||[],"id","name",activeYear()?.id)}</select></label>
-        <label class="field"><span>Source class</span><select name="source_class" required>${optionList(state.academic.classes||[],"id","name")}</select></label>
-        <label class="field"><span>Target academic year</span><select name="target_year" required>${optionList(state.academic.academic_years||[],"id","name")}</select></label>
-        <label class="field"><span>Target class</span><select name="target_class" required>${optionList(state.academic.classes||[],"id","name")}</select></label>
-        <div class="full"><button class="button primary" id="runPromotion" type="button">Promote class</button></div>
-      </form></section>`;
+    const cutoff=Number(state.boot?.school?.promotion_cutoff_score||50);
+    return `<div class="form-stack">
+      <section class="panel pad"><div class="page-head"><div><h3>Automatic Promotion Rule</h3><p>Term 3 promotion is determined from each student's overall average across all assigned subjects.</p></div></div>
+        <div class="promotion-rule-layout">
+          <form id="promotionCutoffForm" class="form-grid promotion-cutoff-form">
+            <label class="field"><span>Promotion cutoff score</span><select name="promotion_cutoff_score" required>${promotionCutoffOptions(cutoff)}</select>
+              <small>Students with a complete Term 3 average at or above this score pass. The allowed range is 40% through 60%.</small></label>
+            <div class="field promotion-setting-action"><span>Academic rule</span><button class="button primary" id="savePromotionCutoff" type="button">Save cutoff score</button></div>
+          </form>
+          <div class="promotion-rule-card"><strong>Current rule: ${number(cutoff,0)}% pass mark</strong>
+            <span>Term 1 and Term 2 do not promote students. In Term 3, the system calculates the arithmetic mean of all subject totals. A student below ${number(cutoff,0)}% is not promoted.</span></div>
+        </div>
+      </section>
+      <section class="panel pad"><div class="page-head"><div><h3>Term 3 Promotion Processing</h3><p>Create or update next-year enrolments only for students who meet the configured pass mark.</p></div></div>
+        <form id="promotionForm" class="form-grid">
+          <label class="field"><span>Source academic year</span><select name="source_year" required>${optionList(state.academic.academic_years||[],"id","name",activeYear()?.id)}</select></label>
+          <label class="field"><span>Source class</span><select name="source_class" required>${optionList(state.academic.classes||[],"id","name")}</select></label>
+          <label class="field"><span>Target academic year</span><select name="target_year" required>${optionList(state.academic.academic_years||[],"id","name")}</select></label>
+          <label class="field"><span>Automatic target class</span><input id="promotionTargetClassLabel" value="Select a source class" readonly><input type="hidden" name="target_class"></label>
+          <div class="full promotion-processing-note" id="promotionProcessingNote">Only complete, approved or published Term 3 reports are processed.</div>
+          <div class="full"><button class="button primary" id="runPromotion" type="button">Run automatic promotion</button></div>
+        </form>
+      </section>
+    </div>`;
+  }
+  function syncPromotionTargetClass() {
+    const form=byId("promotionForm");if(!form)return;
+    const target=configuredNextClass(form.elements.source_class?.value||"");
+    form.elements.target_class.value=target?.id||"";
+    const label=byId("promotionTargetClassLabel"),button=byId("runPromotion"),note=byId("promotionProcessingNote");
+    if(label)label.value=target?.name||"No next class configured";
+    if(button)button.disabled=!target;
+    if(note)note.textContent=target
+      ?`Eligible students will be promoted automatically to ${target.name}. Students below the cutoff remain unpromoted.`
+      :"The selected class is the final configured class or has no higher class level.";
   }
   function bindAcademicTabEvents() {
     byId("addYear")?.addEventListener("click",()=>openYearEditor());
@@ -1297,7 +1333,10 @@
     byId("addGrade")?.addEventListener("click",()=>openGradeEditor());
     $$("[data-edit-grade]").forEach(b=>b.onclick=()=>openGradeEditor(b.dataset.editGrade));
     $$("[data-delete-grade]").forEach(b=>b.onclick=()=>removeGrade(b.dataset.deleteGrade));
+    byId("savePromotionCutoff")?.addEventListener("click",savePromotionCutoff);
+    byId("promotionForm")?.elements.source_class?.addEventListener("change",syncPromotionTargetClass);
     byId("runPromotion")?.addEventListener("click",runPromotion);
+    syncPromotionTargetClass();
   }
   async function removeAcademicEntity(type,id) {
     const labels={academic_year:"Academic year",term:"Term",class:"Class",subject:"Subject",assignment:"Subject assignment"};
@@ -1576,13 +1615,25 @@
     await run(()=>rpc("archive_grading_scale",{target_grade_id:id,reason_text:"Grading scale removed"}),{success:"Grade removed"});
     await refreshAcademic();
   }
+  async function savePromotionCutoff() {
+    const form=byId("promotionCutoffForm"),score=Number(form?.elements.promotion_cutoff_score?.value||0),button=byId("savePromotionCutoff");
+    if(!Number.isInteger(score)||score<40||score>60){toast("Cutoff not saved","Choose a whole-number score from 40 through 60.","error");return}
+    if(button)button.disabled=true;
+    try{
+      const result=await rpc("save_promotion_cutoff",{target_score:score});
+      state.boot.school={...(state.boot.school||{}),promotion_cutoff_score:Number(result.promotion_cutoff_score||score)};
+      toast("Promotion cutoff saved",`${score}% will be used for Term 3 automatic promotion. ${number(result.reports_recalculated||0)} existing Term 3 reports were recalculated.`);
+      renderAcademicTab();
+    }catch(error){toast("Cutoff not saved",friendlyError(error),"error",6500)}finally{if(button)button.disabled=false}
+  }
   async function runPromotion() {
-    const form=byId("promotionForm"),v=formObject(form);
-    if(!v.source_year||!v.source_class||!v.target_year||!v.target_class)return;
-    if(!await confirmAction("Promote Class","Active students will receive enrolments in the selected target class.","Promote"))return;
+    const form=byId("promotionForm"),v=formObject(form),target=configuredNextClass(v.source_class);
+    if(!v.source_year||!v.source_class||!v.target_year||!v.target_class||!target)return;
+    const cutoff=Number(state.boot?.school?.promotion_cutoff_score||50);
+    if(!await confirmAction("Run Automatic Promotion",`Complete Term 3 reports with an average of ${cutoff}% or higher will be promoted to ${target.name}. Students below the cutoff will not be promoted.`,"Run promotion"))return;
     const result=await run(()=>rpc("bulk_promote_class",{source_academic_year_id:v.source_year,source_class_id:v.source_class,
-      target_academic_year_id:v.target_year,target_class_id:v.target_class}),{success:"Class promotion completed"});
-    toast("Promotion result",`${result.promoted} enrolments created or updated`);
+      target_academic_year_id:v.target_year,target_class_id:v.target_class}),{success:"Automatic promotion completed"});
+    toast("Promotion result",`${number(result.promoted||0)} promoted • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete`);
   }
 
 
@@ -1673,10 +1724,45 @@
       if(enrollment&&term){closeModal();openReportEditor(null,enrollment,term)}
     };
   }
+  function localPromotionEvaluation(editor=state.reportEditor) {
+    const student=editor?.student||{},subjects=editor?.subjects||[];
+    const cutoff=Number(state.boot?.school?.promotion_cutoff_score||50);
+    const term3=Number(student.term_sequence||0)===3;
+    const complete=subjects.length>0;
+    const average=complete?subjects.reduce((sum,row)=>sum+Number(row.total_score||0),0)/subjects.length:0;
+    const nextClass=configuredNextClass(student.class_id);
+    const passed=term3&&complete&&average>=cutoff;
+    return {term3,complete,average,cutoff,passed,next_class_id:nextClass?.id||null,next_class_name:nextClass?.name||"",can_create_enrollment:passed&&Boolean(nextClass)};
+  }
+  async function enrichReportPromotion(editor) {
+    if(!editor)return editor;
+    if(editor.report?.id){
+      try{editor.promotion=await rpc("report_promotion_evaluation",{target_report_id:editor.report.id})}
+      catch(_){editor.promotion=localPromotionEvaluation(editor)}
+    }else editor.promotion=localPromotionEvaluation(editor);
+    return editor;
+  }
+  function promotionDisplay(evaluation=localPromotionEvaluation()) {
+    if(!evaluation.term3)return {title:"Not applicable",detail:"Automatic promotion is calculated from Term 3 performance only.",state:"neutral"};
+    if(!evaluation.complete)return {title:"Awaiting complete results",detail:`All assigned subjects must be completed before the ${number(evaluation.cutoff||50,0)}% promotion rule is applied.`,state:"warning"};
+    if(evaluation.passed&&evaluation.next_class_name)return {title:`Promoted to ${evaluation.next_class_name}`,detail:`Term 3 average ${number(evaluation.average,1)}% meets the ${number(evaluation.cutoff,0)}% cutoff.`,state:"pass"};
+    if(evaluation.passed&&!evaluation.next_class_name)return {title:"Passed, no next class configured",detail:`Term 3 average ${number(evaluation.average,1)}% meets the ${number(evaluation.cutoff,0)}% cutoff.`,state:"pass"};
+    return {title:"Not promoted",detail:`Term 3 average ${number(evaluation.average,1)}% is below the ${number(evaluation.cutoff,0)}% cutoff.`,state:"fail"};
+  }
+  function updatePromotionPreview() {
+    if(!state.reportEditor)return;
+    const evaluation=localPromotionEvaluation(state.reportEditor),display=promotionDisplay(evaluation);
+    state.reportEditor.promotion=evaluation;
+    const title=byId("automaticPromotionValue"),detail=byId("automaticPromotionDetail"),box=byId("automaticPromotionField");
+    if(title)title.textContent=display.title;if(detail)detail.textContent=display.detail;
+    if(box)box.dataset.promotionState=display.state;
+  }
+
   async function openReportEditor(reportId=null,enrollmentId=null,termId=null) {
     setLoading(true);
     try {
       const editor=await rpc("get_report_editor",{target_report_id:reportId,target_enrollment_id:enrollmentId,target_term_id:termId});
+      await enrichReportPromotion(editor);
       state.reportEditor=editor;
       state.view="reports";renderNav();
       renderReportEditor();
@@ -1693,6 +1779,7 @@
     if(!state.reportEditor?.report?.id)return;
     try{
       const latest=await rpc("get_report_editor",{target_report_id:state.reportEditor.report.id,target_enrollment_id:null,target_term_id:null});
+      await enrichReportPromotion(latest);
       if(state.reportEditor&&Number(latest.report.version)>Number(state.reportEditor.report.version)) {
         state.reportEditor=latest;renderReportEditor();toast("Report refreshed","A newer version was received.","warning");
       }
@@ -1723,7 +1810,7 @@
               <div class="form-grid three">
                 <label class="field"><span>Days school opened</span><input name="days_school_opened" type="number" min="0" value="${attr(report.days_school_opened||0)}" ${fieldsLocked?"disabled":""}></label>
                 <label class="field"><span>Days present</span><input name="days_present" type="number" min="0" value="${attr(report.days_present||0)}" ${fieldsLocked?"disabled":""}></label>
-                <label class="field"><span>Promoted to</span><select name="promoted_to_class_id" ${fieldsLocked?"disabled":""}>${optionList(state.boot.classes||[],"id","name",report.promoted_to_class_id,"Not specified")}</select></label>
+                ${(()=>{const display=promotionDisplay(editor.promotion||localPromotionEvaluation(editor));return `<div class="field automatic-promotion-field" id="automaticPromotionField" data-promotion-state="${display.state}"><span>Automatic promotion</span><strong id="automaticPromotionValue">${esc(display.title)}</strong><small id="automaticPromotionDetail">${esc(display.detail)}</small></div>`})()}
                 <label class="field"><span>Attitude</span><input name="attitude" value="${attr(report.attitude||"")}" ${fieldsLocked?"disabled":""}></label>
                 <label class="field"><span>Conduct</span><input name="conduct" value="${attr(report.conduct||"")}" ${fieldsLocked?"disabled":""}></label>
                 <label class="field"><span>Interest or talent</span><input name="interest" value="${attr(report.interest||"")}" ${fieldsLocked?"disabled":""}></label>
@@ -1765,6 +1852,7 @@
     }));
     $$("[data-teacher-initials]").forEach(input=>input.addEventListener("input",scheduleLocalDraft));
     $$("#reportForm input,#reportForm textarea,#reportForm select").forEach(input=>input.addEventListener("change",scheduleLocalDraft));
+    updatePromotionPreview();
     setTimeout(()=>applyAutomaticComments(false),0);
   }
   function reportSubjectRow(subject,index,locked) {
@@ -1792,6 +1880,7 @@
     $(`[data-subject-total="${index}"]`).textContent=number(subject.total_score,1);
     const totals=state.reportEditor.subjects.map(s=>Number(s.total_score||0));
     byId("reportAverage").textContent=`${number(totals.reduce((a,b)=>a+b,0)/(totals.length||1),1)}%`;
+    updatePromotionPreview();
     if(byId("reportForm")?.elements.teacher_comment?.dataset.autoGenerated==="true"||byId("reportForm")?.elements.head_comment?.dataset.autoGenerated==="true")applyAutomaticComments(false);
   }
   function automaticCommentText() {
@@ -1815,8 +1904,11 @@
     else {teacherComment=`${firstName} needs substantial academic improvement. The current average is ${mark}%, and immediate support is required, particularly in ${weakest}.`;headComment="Considerable improvement is required. Consistent effort, supervision, and remedial support should begin immediately."}
     if(opened>0&&attendance<85)teacherComment+=` Attendance also requires improvement (${present} of ${opened} days present).`;
     else if(opened>0&&attendance>=95)teacherComment+=` ${pronoun} maintained excellent attendance.`;
-    const promoted=form?.elements.promoted_to_class_id?.selectedOptions?.[0]?.textContent||"";
-    if(promoted&&form.elements.promoted_to_class_id.value)headComment+=` Promotion: ${promoted}.`;
+    const promotion=localPromotionEvaluation(editor);
+    if(promotion.term3&&promotion.complete){
+      if(promotion.passed&&promotion.next_class_name)headComment+=` Promotion: Promoted to ${promotion.next_class_name}.`;
+      else if(!promotion.passed)headComment+=` Promotion: Not promoted because the Term 3 average is below the ${number(promotion.cutoff,0)}% cutoff.`;
+    }
     return {teacherComment,headComment,average};
   }
   function applyAutomaticComments(force=false) {
@@ -1867,7 +1959,7 @@
     const fields=editor.can_edit_fields?{days_school_opened:Number(values.days_school_opened||0),days_present:Number(values.days_present||0),
       attitude:values.attitude||"",conduct:values.conduct||"",interest:values.interest||"",
       teacher_comment:values.teacher_comment||"",head_comment:values.head_comment??editor.report.head_comment??"",
-      promoted_to_class_id:values.promoted_to_class_id||null}:{};
+      promoted_to_class_id:editor.report.promoted_to_class_id||null}:{};
     return {report_id:editor.report.id||null,enrollment_id:editor.report.enrollment_id,term_id:editor.report.term_id,fields,subjects,reason:"Report assessment updated"};
   }
   function scheduleLocalDraft() {
@@ -1902,7 +1994,7 @@
           else throw error;
         }
       }
-      if(saved?.report){state.workspace=null;state.reportEditor=saved;renderReportEditor()}
+      if(saved?.report){await enrichReportPromotion(saved);state.workspace=null;state.reportEditor=saved;renderReportEditor()}
       const key=`report:${payload.report_id||`${payload.enrollment_id}:${payload.term_id}`}`;await draftDelete(key).catch(()=>{});
       if(persisted)toast("Report saved");
     } catch(error){
@@ -1922,6 +2014,7 @@
         if(state.reportEditor.can_edit&&(targetStatus==="submitted"||(targetStatus==="published"&&state.reportEditor.report.status==="withdrawn")))await saveOpenReport();
         const updated=await rpc("transition_report_status",{target_report_id:state.reportEditor.report.id,target_status:targetStatus,
           comment_text:comment,expected_version:state.reportEditor.report.version});
+        await enrichReportPromotion(updated);
         state.workspace=null;state.reportEditor=updated;closeModal();toast("Report status updated");
         renderReportEditor();
         if(targetStatus==="published")await generateAndUploadOfficialPdf();
@@ -1935,7 +2028,7 @@
     byId("correctionCancel").onclick=closeModal;
     byId("correctionOpen").onclick=async()=>{
       const reason=byId("correctionReason").value.trim();if(!reason)return;
-      try{state.reportEditor=await rpc("begin_report_correction",{target_report_id:state.reportEditor.report.id,reason_text:reason});closeModal();renderReportEditor();toast("Correction opened")}
+      try{state.reportEditor=await rpc("begin_report_correction",{target_report_id:state.reportEditor.report.id,reason_text:reason});await enrichReportPromotion(state.reportEditor);closeModal();renderReportEditor();toast("Correction opened")}
       catch(error){toast("Correction not opened",friendlyError(error),"error")}
     };
   }
