@@ -1290,6 +1290,11 @@
     const years=orderedPromotionAcademicYears(),index=years.findIndex(row=>row.id===sourceYearId);
     return index>=0?years[index+1]||null:null;
   }
+  function isTermThreeRecord(record={}) {
+    if(Number(record?.term_sequence||0)===3)return true;
+    const normalized=String(record?.term_name||record?.name||"").toLowerCase().replace(/[^a-z0-9]+/g,"");
+    return ["term3","termthree","thirdterm","3rdterm"].includes(normalized);
+  }
   function promotionTargetYearOptions(sourceYearId) {
     const target=configuredNextAcademicYear(sourceYearId);
     return target?`<option value="${attr(target.id)}" selected>${esc(target.name)}</option>`:`<option value="">Create the next academic year first</option>`;
@@ -1315,7 +1320,7 @@
             <span>Term 1 and Term 2 do not promote students. In Term 3, the system calculates the arithmetic mean of all subject totals. A student below ${number(cutoff,0)}% is not promoted.</span></div>
         </div>
       </section>
-      <section class="panel pad"><div class="page-head"><div><h3>Term 3 Promotion Processing</h3><p>Create or update next-year enrolments only for students who meet the configured pass mark.</p></div></div>
+      <section class="panel pad"><div class="page-head"><div><h3>Term 3 Promotion Processing</h3><p>The source year contains the Term 3 assessment. The automatic target is the immediate next academic year, where the promoted enrolment is created.</p></div></div>
         <form id="promotionForm" class="form-grid">
           <label class="field"><span>Source academic year</span><select name="source_year" required>${optionList(years,"id","name",sourceYearId)}</select></label>
           <label class="field"><span>Source class</span><select name="source_class" required>${promotionSourceClassOptions()}</select>
@@ -1323,7 +1328,7 @@
           <label class="field"><span>Automatic target academic year</span><select name="target_year" required>${promotionTargetYearOptions(sourceYearId)}</select>
             <small>The immediate next configured academic year is selected automatically.</small></label>
           <label class="field"><span>Automatic target class</span><input id="promotionTargetClassLabel" value="Select a source class" readonly><input type="hidden" name="target_class"></label>
-          <div class="full promotion-processing-note" id="promotionProcessingNote">Only complete, approved or published Term 3 reports are processed.</div>
+          <div class="full promotion-processing-note" id="promotionProcessingNote">Complete Term 3 assessment records in draft, submitted, class-reviewed, approved, or published status are processed. Returned and withdrawn reports are skipped.</div>
           <div class="full"><button class="button primary" id="runPromotion" type="button">Run automatic promotion</button></div>
         </form>
       </section>
@@ -1357,7 +1362,7 @@
       if(label)label.value=mappings.length?`Each eligible class → its next class (${mappings.length} mappings)`:"No eligible class mappings";
       if(button){button.disabled=!mappings.length;button.textContent="Run all-class promotion"}
       if(note)note.textContent=mappings.length
-        ?`One operation will process ${mappings.length} class mappings into ${targetYear.name}. The final class, and any class without a higher configured class, will be skipped.`
+        ?`Source-year Term 3 results will create next-year enrolments in ${targetYear.name}. One operation will process ${mappings.length} class mappings. The final class, and any class without a higher configured class, will be skipped.`
         :"No active class currently has a higher configured class.";
       return;
     }
@@ -1365,7 +1370,7 @@
     if(button){button.disabled=!target;button.textContent="Run automatic promotion"}
     if(note)note.textContent=target
       ?`Eligible students will be promoted automatically to ${target.name} for ${targetYear.name}. Students below the cutoff remain unpromoted.`
-      :(sourceValue?"The selected class is the final configured class or has no higher class level.":"Only complete, approved or published Term 3 reports are processed.");
+      :(sourceValue?"The selected class is the final configured class or has no higher class level.":"Complete Term 3 assessment records are processed. Returned and withdrawn reports are skipped.");
   }
   function bindAcademicTabEvents() {
     byId("addYear")?.addEventListener("click",()=>openYearEditor());
@@ -1706,7 +1711,7 @@
       try{
         const result=await run(()=>rpc("bulk_promote_all_classes",{source_academic_year_id:v.source_year,target_academic_year_id:v.target_year}),{success:"All-class automatic promotion completed"});
         const targetName=result.target_academic_year_name||expectedTargetYear.name;
-        toast("All-class promotion result",`${number(result.classes_processed||0)} class mappings processed into ${targetName} • ${number(result.promoted||0)} promoted • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete`);
+        toast("All-class promotion result",`${number(result.classes_processed||0)} class mappings processed into ${targetName} • ${number(result.promoted||0)} promoted • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete${number(result.skipped_status||0)?` • ${number(result.skipped_status||0)} returned/withdrawn skipped`:""}`);
       }finally{syncPromotionTargetYear()}
       return;
     }
@@ -1718,7 +1723,7 @@
       const result=await run(()=>rpc("bulk_promote_class",{source_academic_year_id:v.source_year,source_class_id:v.source_class,
         target_academic_year_id:v.target_year,target_class_id:v.target_class}),{success:"Automatic promotion completed"});
       const targetName=result.target_academic_year_name||expectedTargetYear.name;
-      toast("Promotion result",`${number(result.promoted||0)} promoted into ${targetName} • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete`);
+      toast("Promotion result",`${number(result.promoted||0)} promoted into ${targetName} • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete${number(result.skipped_status||0)?` • ${number(result.skipped_status||0)} returned/withdrawn skipped`:""}`);
     }finally{syncPromotionTargetYear()}
   }
 
@@ -1811,14 +1816,18 @@
     };
   }
   function localPromotionEvaluation(editor=state.reportEditor) {
-    const student=editor?.student||{},subjects=editor?.subjects||[];
+    const student=editor?.student||{},subjects=editor?.subjects||[],previous=editor?.promotion||{};
     const cutoff=Number(state.boot?.school?.promotion_cutoff_score||50);
-    const term3=Number(student.term_sequence||0)===3;
+    const term3=isTermThreeRecord(student);
     const complete=subjects.length>0;
     const average=complete?subjects.reduce((sum,row)=>sum+Number(row.total_score||0),0)/subjects.length:0;
     const nextClass=configuredNextClass(student.class_id);
     const passed=term3&&complete&&average>=cutoff;
-    return {term3,complete,average,cutoff,passed,next_class_id:nextClass?.id||null,next_class_name:nextClass?.name||"",can_create_enrollment:passed&&Boolean(nextClass)};
+    const targetYear=previous.target_academic_year_id?{id:previous.target_academic_year_id,name:previous.target_academic_year_name||""}:configuredNextAcademicYear(student.academic_year_id);
+    const promotionApplied=Boolean(passed&&previous.promotion_applied&&previous.next_class_id===nextClass?.id);
+    return {term3,complete,average,cutoff,passed,next_class_id:nextClass?.id||null,next_class_name:nextClass?.name||"",
+      target_academic_year_id:targetYear?.id||null,target_academic_year_name:targetYear?.name||"",promotion_applied:promotionApplied,
+      can_create_enrollment:passed&&Boolean(nextClass&&targetYear)};
   }
   async function enrichReportPromotion(editor) {
     if(!editor)return editor;
@@ -1829,9 +1838,10 @@
     return editor;
   }
   function promotionDisplay(evaluation=localPromotionEvaluation()) {
-    if(!evaluation.term3)return {title:"Not applicable",detail:"Automatic promotion is calculated from Term 3 performance only.",state:"neutral"};
+    if(!evaluation.term3)return {title:"Not applicable",detail:"This record is not recognised as Term 3. Automatic promotion uses Term 3 results only.",state:"neutral"};
     if(!evaluation.complete)return {title:"Awaiting complete results",detail:`All assigned subjects must be completed before the ${number(evaluation.cutoff||50,0)}% promotion rule is applied.`,state:"warning"};
-    if(evaluation.passed&&evaluation.next_class_name)return {title:`Promoted to ${evaluation.next_class_name}`,detail:`Term 3 average ${number(evaluation.average,1)}% meets the ${number(evaluation.cutoff,0)}% cutoff.`,state:"pass"};
+    if(evaluation.passed&&evaluation.next_class_name&&evaluation.promotion_applied)return {title:`Promoted to ${evaluation.next_class_name}`,detail:`The ${evaluation.target_academic_year_name||"next academic year"} enrolment has been created. Source-year records remain in their original class for historical accuracy.`,state:"pass"};
+    if(evaluation.passed&&evaluation.next_class_name)return {title:`Eligible for ${evaluation.next_class_name}`,detail:`Term 3 average ${number(evaluation.average,1)}% meets the ${number(evaluation.cutoff,0)}% cutoff. Run Term 3 Promotion Processing to create the ${evaluation.target_academic_year_name||"next-year"} enrolment.`,state:"pass"};
     if(evaluation.passed&&!evaluation.next_class_name)return {title:"Passed, no next class configured",detail:`Term 3 average ${number(evaluation.average,1)}% meets the ${number(evaluation.cutoff,0)}% cutoff.`,state:"pass"};
     return {title:"Not promoted",detail:`Term 3 average ${number(evaluation.average,1)}% is below the ${number(evaluation.cutoff,0)}% cutoff.`,state:"fail"};
   }
