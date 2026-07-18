@@ -1277,6 +1277,23 @@
     return classes.map(source=>({source,target:classes.find(row=>Number(row.level_order||0)>Number(source.level_order||0))||null}))
       .filter(mapping=>mapping.target);
   }
+  function promotionAcademicYearOrderValue(row) {
+    const start=Date.parse(row?.start_date||"");if(Number.isFinite(start))return start;
+    const year=String(row?.name||"").match(/(?:19|20)\d{2}/)?.[0];if(year)return Date.UTC(Number(year),0,1);
+    const created=Date.parse(row?.created_at||"");return Number.isFinite(created)?created:0;
+  }
+  function orderedPromotionAcademicYears() {
+    return [...(state.academic?.academic_years||[])].filter(row=>!row.deleted_at)
+      .sort((a,b)=>promotionAcademicYearOrderValue(a)-promotionAcademicYearOrderValue(b)||String(a.name||"").localeCompare(String(b.name||""),undefined,{numeric:true}));
+  }
+  function configuredNextAcademicYear(sourceYearId) {
+    const years=orderedPromotionAcademicYears(),index=years.findIndex(row=>row.id===sourceYearId);
+    return index>=0?years[index+1]||null:null;
+  }
+  function promotionTargetYearOptions(sourceYearId) {
+    const target=configuredNextAcademicYear(sourceYearId);
+    return target?`<option value="${attr(target.id)}" selected>${esc(target.name)}</option>`:`<option value="">Create the next academic year first</option>`;
+  }
   function promotionSourceClassOptions() {
     const rows=orderedActiveClasses();
     return `<option value="">Select</option><option value="${PROMOTION_ALL_CLASSES}">All eligible classes</option>`+
@@ -1284,6 +1301,8 @@
   }
   function renderPromotionTab() {
     const cutoff=Number(state.boot?.school?.promotion_cutoff_score||50);
+    const years=orderedPromotionAcademicYears();
+    const sourceYearId=activeYear()?.id||years[0]?.id||"";
     return `<div class="form-stack">
       <section class="panel pad"><div class="page-head"><div><h3>Automatic Promotion Rule</h3><p>Term 3 promotion is determined from each student's overall average across all assigned subjects.</p></div></div>
         <div class="promotion-rule-layout">
@@ -1298,10 +1317,11 @@
       </section>
       <section class="panel pad"><div class="page-head"><div><h3>Term 3 Promotion Processing</h3><p>Create or update next-year enrolments only for students who meet the configured pass mark.</p></div></div>
         <form id="promotionForm" class="form-grid">
-          <label class="field"><span>Source academic year</span><select name="source_year" required>${optionList(state.academic.academic_years||[],"id","name",activeYear()?.id)}</select></label>
+          <label class="field"><span>Source academic year</span><select name="source_year" required>${optionList(years,"id","name",sourceYearId)}</select></label>
           <label class="field"><span>Source class</span><select name="source_class" required>${promotionSourceClassOptions()}</select>
             <small>Select one class, or process every class that has a configured next class.</small></label>
-          <label class="field"><span>Target academic year</span><select name="target_year" required>${optionList(state.academic.academic_years||[],"id","name")}</select></label>
+          <label class="field"><span>Automatic target academic year</span><select name="target_year" required>${promotionTargetYearOptions(sourceYearId)}</select>
+            <small>The immediate next configured academic year is selected automatically.</small></label>
           <label class="field"><span>Automatic target class</span><input id="promotionTargetClassLabel" value="Select a source class" readonly><input type="hidden" name="target_class"></label>
           <div class="full promotion-processing-note" id="promotionProcessingNote">Only complete, approved or published Term 3 reports are processed.</div>
           <div class="full"><button class="button primary" id="runPromotion" type="button">Run automatic promotion</button></div>
@@ -1309,24 +1329,42 @@
       </section>
     </div>`;
   }
+  function syncPromotionTargetYear() {
+    const form=byId("promotionForm");if(!form)return;
+    const sourceYearId=form.elements.source_year?.value||"",target=configuredNextAcademicYear(sourceYearId),targetSelect=form.elements.target_year;
+    if(targetSelect){
+      targetSelect.innerHTML=promotionTargetYearOptions(sourceYearId);
+      targetSelect.value=target?.id||"";
+      targetSelect.disabled=!target;
+    }
+    syncPromotionTargetClass();
+  }
   function syncPromotionTargetClass() {
     const form=byId("promotionForm");if(!form)return;
+    const sourceYearId=form.elements.source_year?.value||"",targetYear=configuredNextAcademicYear(sourceYearId);
     const sourceValue=form.elements.source_class?.value||"",allClasses=sourceValue===PROMOTION_ALL_CLASSES;
     const mappings=allClasses?configuredPromotionMappings():[],target=allClasses?null:configuredNextClass(sourceValue);
     form.elements.target_class.value=target?.id||"";
     const label=byId("promotionTargetClassLabel"),button=byId("runPromotion"),note=byId("promotionProcessingNote");
+    const validYear=Boolean(targetYear&&form.elements.target_year?.value===targetYear.id);
+    if(!validYear){
+      if(label)label.value="Next academic year required";
+      if(button){button.disabled=true;button.textContent=allClasses?"Run all-class promotion":"Run automatic promotion"}
+      if(note)note.textContent="Create the immediate next academic year before running Term 3 promotion.";
+      return;
+    }
     if(allClasses){
       if(label)label.value=mappings.length?`Each eligible class → its next class (${mappings.length} mappings)`:"No eligible class mappings";
       if(button){button.disabled=!mappings.length;button.textContent="Run all-class promotion"}
       if(note)note.textContent=mappings.length
-        ?`One operation will process ${mappings.length} class mappings in configured level order. The final class, and any class without a higher configured class, will be skipped.`
+        ?`One operation will process ${mappings.length} class mappings into ${targetYear.name}. The final class, and any class without a higher configured class, will be skipped.`
         :"No active class currently has a higher configured class.";
       return;
     }
     if(label)label.value=target?.name||(sourceValue?"No next class configured":"Select a source class");
     if(button){button.disabled=!target;button.textContent="Run automatic promotion"}
     if(note)note.textContent=target
-      ?`Eligible students will be promoted automatically to ${target.name}. Students below the cutoff remain unpromoted.`
+      ?`Eligible students will be promoted automatically to ${target.name} for ${targetYear.name}. Students below the cutoff remain unpromoted.`
       :(sourceValue?"The selected class is the final configured class or has no higher class level.":"Only complete, approved or published Term 3 reports are processed.");
   }
   function bindAcademicTabEvents() {
@@ -1357,9 +1395,10 @@
     $$("[data-edit-grade]").forEach(b=>b.onclick=()=>openGradeEditor(b.dataset.editGrade));
     $$("[data-delete-grade]").forEach(b=>b.onclick=()=>removeGrade(b.dataset.deleteGrade));
     byId("savePromotionCutoff")?.addEventListener("click",savePromotionCutoff);
+    byId("promotionForm")?.elements.source_year?.addEventListener("change",syncPromotionTargetYear);
     byId("promotionForm")?.elements.source_class?.addEventListener("change",syncPromotionTargetClass);
     byId("runPromotion")?.addEventListener("click",runPromotion);
-    syncPromotionTargetClass();
+    syncPromotionTargetYear();
   }
   async function removeAcademicEntity(type,id) {
     const labels={academic_year:"Academic year",term:"Term",class:"Class",subject:"Subject",assignment:"Subject assignment"};
@@ -1651,27 +1690,36 @@
   }
   async function runPromotion() {
     const form=byId("promotionForm"),v=formObject(form),allClasses=v.source_class===PROMOTION_ALL_CLASSES;
-    if(!v.source_year||!v.source_class||!v.target_year)return;
+    if(!v.source_year||!v.source_class)return;
+    const expectedTargetYear=configuredNextAcademicYear(v.source_year);
+    if(!expectedTargetYear){toast("Promotion not started","Create the immediate next academic year first.","error",6500);syncPromotionTargetYear();return}
+    if(v.target_year!==expectedTargetYear.id){
+      form.elements.target_year.value=expectedTargetYear.id;
+      toast("Target year corrected",`${expectedTargetYear.name} is the automatic next academic year.`,"warning",5000);
+      v.target_year=expectedTargetYear.id;
+    }
     const cutoff=Number(state.boot?.school?.promotion_cutoff_score||50),button=byId("runPromotion");
     if(allClasses){
       const mappings=configuredPromotionMappings();if(!mappings.length)return;
-      if(!await confirmAction("Run All-Class Automatic Promotion",`This single operation will process ${mappings.length} eligible class mappings. Complete Term 3 reports with an average of ${cutoff}% or higher will move to each class's respective next class. Students below the cutoff remain unpromoted.`,"Run all classes"))return;
+      if(!await confirmAction("Run All-Class Automatic Promotion",`This single operation will process ${mappings.length} eligible class mappings into ${expectedTargetYear.name}. Complete Term 3 reports with an average of ${cutoff}% or higher will move to each class's respective next class. Students below the cutoff remain unpromoted.`,"Run all classes"))return;
       if(button)button.disabled=true;
       try{
         const result=await run(()=>rpc("bulk_promote_all_classes",{source_academic_year_id:v.source_year,target_academic_year_id:v.target_year}),{success:"All-class automatic promotion completed"});
-        toast("All-class promotion result",`${number(result.classes_processed||0)} class mappings processed • ${number(result.promoted||0)} promoted • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete`);
-      }finally{syncPromotionTargetClass()}
+        const targetName=result.target_academic_year_name||expectedTargetYear.name;
+        toast("All-class promotion result",`${number(result.classes_processed||0)} class mappings processed into ${targetName} • ${number(result.promoted||0)} promoted • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete`);
+      }finally{syncPromotionTargetYear()}
       return;
     }
     const target=configuredNextClass(v.source_class);
     if(!v.target_class||!target)return;
-    if(!await confirmAction("Run Automatic Promotion",`Complete Term 3 reports with an average of ${cutoff}% or higher will be promoted to ${target.name}. Students below the cutoff will not be promoted.`,"Run promotion"))return;
+    if(!await confirmAction("Run Automatic Promotion",`Complete Term 3 reports with an average of ${cutoff}% or higher will be promoted to ${target.name} for ${expectedTargetYear.name}. Students below the cutoff will not be promoted.`,"Run promotion"))return;
     if(button)button.disabled=true;
     try{
       const result=await run(()=>rpc("bulk_promote_class",{source_academic_year_id:v.source_year,source_class_id:v.source_class,
         target_academic_year_id:v.target_year,target_class_id:v.target_class}),{success:"Automatic promotion completed"});
-      toast("Promotion result",`${number(result.promoted||0)} promoted • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete`);
-    }finally{syncPromotionTargetClass()}
+      const targetName=result.target_academic_year_name||expectedTargetYear.name;
+      toast("Promotion result",`${number(result.promoted||0)} promoted into ${targetName} • ${number(result.not_promoted||0)} not promoted • ${number(result.incomplete||0)} incomplete`);
+    }finally{syncPromotionTargetYear()}
   }
 
 
