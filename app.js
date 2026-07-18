@@ -599,6 +599,7 @@
   if(window.__NIS_TEMPLATE_TEST_MODE__){
     window.NIS_TEMPLATE_TEST_HOOKS=Object.freeze({
       reportTemplateRangeForClass,validateReportTemplateFile,normaliseTemplateCanvas,drawAssignedTemplateOverlay,drawPreferredTerminalReport,builtInReportTemplateCanvas,
+      ordinalReportPosition,reportBodyFontName,reportBodyFontSize,reportBodyFontScale,reportSubjectPositionMap,
       setBoot:value=>{state.boot=value},getState:()=>state
     });
   }
@@ -2146,7 +2147,49 @@
     const img=box.querySelector("img");if(img)return img;
     return null;
   }
-  const REPORT_FONT_FAMILY='"Times New Roman", Times, "Liberation Serif", serif';
+  const REPORT_FONT_OPTIONS=Object.freeze({
+    "Times New Roman":'"Times New Roman", Times, "Liberation Serif", serif',
+    "Arial":'Arial, Helvetica, "Liberation Sans", sans-serif',
+    "Calibri":'Calibri, Carlito, Arial, sans-serif',
+    "Georgia":'Georgia, "Times New Roman", serif',
+    "Verdana":'Verdana, Geneva, sans-serif',
+    "Tahoma":'Tahoma, Arial, sans-serif'
+  });
+  const REPORT_RESULT_COLOURS=Object.freeze({
+    score:"#083b78",
+    total:"#b00020",
+    grade:"#006400",
+    position:"#b00020"
+  });
+
+  function reportBodyFontName() {
+    const requested=String(state.boot?.school?.report_body_font||"Times New Roman");
+    return Object.prototype.hasOwnProperty.call(REPORT_FONT_OPTIONS,requested)?requested:"Times New Roman";
+  }
+
+  function reportBodyFontFamily() {
+    return REPORT_FONT_OPTIONS[reportBodyFontName()]||REPORT_FONT_OPTIONS["Times New Roman"];
+  }
+
+  function reportBodyFontSize() {
+    const requested=Number(state.boot?.school?.report_body_font_size??11);
+    return Number.isFinite(requested)?Math.min(16,Math.max(8,requested)):11;
+  }
+
+  function reportBodyFontScale() {
+    return reportBodyFontSize()/11;
+  }
+
+  function reportFontOptionsHtml(selected="Times New Roman") {
+    const current=Object.prototype.hasOwnProperty.call(REPORT_FONT_OPTIONS,selected)?selected:"Times New Roman";
+    return Object.keys(REPORT_FONT_OPTIONS).map(name=>`<option value="${attr(name)}" ${name===current?"selected":""}>${esc(name)}</option>`).join("");
+  }
+
+  async function ensureReportBodyFontReady() {
+    if(!document.fonts?.load)return;
+    const safeName=reportBodyFontName().replace(/["\\]/g,"");
+    await document.fonts.load(`${reportBodyFontSize()}pt "${safeName}"`).catch(()=>{});
+  }
 
 
   function reportTemplateGroup(rangeKey) {
@@ -2320,7 +2363,9 @@
   }
 
   function setReportFont(ctx,size,weight="normal",style="normal") {
-    ctx.font=`${style} ${weight} ${size}px ${REPORT_FONT_FAMILY}`;
+    const actualSize=Math.max(1,Number(size||0)*reportBodyFontScale());
+    ctx.font=`${style} ${weight} ${actualSize}px ${reportBodyFontFamily()}`;
+    return actualSize;
   }
 
   function drawCenteredReportText(ctx,text,x1,x2,y) {
@@ -2388,12 +2433,18 @@
     return {classScore,examScore,total};
   }
 
-  function reportSubjectRanks(subjects) {
-    const distinct=[...new Set(subjects.map(item=>Number(item.total_score||0)))].sort((a,b)=>b-a);
-    return new Map(subjects.map(item=>[
-      item.subject_id||item.subject_name,
-      ordinalReportPosition(distinct.indexOf(Number(item.total_score||0))+1)
-    ]));
+  async function reportSubjectPositionMap(reportId) {
+    if(!reportId)return new Map();
+    try{
+      const rows=await rpc("report_subject_positions",{target_report_id:reportId});
+      return new Map((Array.isArray(rows)?rows:[]).map(item=>[
+        item.subject_id,
+        ordinalReportPosition(item.position)
+      ]));
+    }catch(error){
+      await reportClientError(error,{source:"subject_positions",report_id:reportId});
+      return new Map();
+    }
   }
 
   async function resolveReportImageAssets({reportId=null,manual=false,studentPhotoPath="",className=""}={}) {
@@ -2435,7 +2486,7 @@
       size-=1;
     }
     ctx.fillStyle=colour;ctx.textBaseline="middle";
-    const lineHeight=size*1.08,totalHeight=lineHeight*lines.length;
+    const lineHeight=size*reportBodyFontScale()*1.08,totalHeight=lineHeight*lines.length;
     let y=y1+(y2-y1-totalHeight)/2+lineHeight/2;
     lines.forEach(line=>{ctx.fillText(line,x1+8,y);y+=lineHeight});
     ctx.textBaseline="alphabetic";
@@ -2538,7 +2589,7 @@
     const weights=subjectWidths.map(lines=>lines>1?1.34:1);
     const availableHeight=tableBottom-bodyTop,weightTotal=weights.reduce((sum,value)=>sum+value,0);
     let rowY=bodyTop;
-    const ranks=manual?new Map():reportSubjectRanks(subjects);
+    const ranks=manual?new Map():await reportSubjectPositionMap(report.id);
 
     ctx.strokeStyle="#1d1d1d";ctx.lineWidth=1.15;
     ctx.beginPath();
@@ -2562,19 +2613,19 @@
           preferredSize:20,minimumSize:13,maxLines:2,colour:ink
         });
         drawReportCellText(ctx,score(breakdown.classScore),columns[1],columns[2],(rowY+nextY)/2,{
-          align:"center",preferredSize:19,minimumSize:13,colour:ink
+          align:"center",preferredSize:19,minimumSize:13,colour:REPORT_RESULT_COLOURS.score
         });
         drawReportCellText(ctx,score(breakdown.examScore),columns[2],columns[3],(rowY+nextY)/2,{
-          align:"center",preferredSize:19,minimumSize:13,colour:ink
+          align:"center",preferredSize:19,minimumSize:13,colour:REPORT_RESULT_COLOURS.score
         });
         drawReportCellText(ctx,score(breakdown.total),columns[3],columns[4],(rowY+nextY)/2,{
-          align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:ink
+          align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:REPORT_RESULT_COLOURS.total
         });
         drawReportCellText(ctx,manual?"":subject.grade||"",columns[4],columns[5],(rowY+nextY)/2,{
-          align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:ink
+          align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:REPORT_RESULT_COLOURS.grade
         });
-        drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id||subject.subject_name)||"",columns[5],columns[6],(rowY+nextY)/2,{
-          align:"center",preferredSize:18,minimumSize:12,colour:ink
+        drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id)||"",columns[5],columns[6],(rowY+nextY)/2,{
+          align:"center",preferredSize:18,minimumSize:12,weight:"bold",colour:REPORT_RESULT_COLOURS.position
         });
         drawReportCellText(ctx,manual?"":subject.remark||"",columns[6],columns[7],(rowY+nextY)/2,{
           preferredSize:18,minimumSize:11,colour:ink
@@ -2669,6 +2720,7 @@
   async function drawPreferredTerminalReport({
     student={},report={},subjects=[],publication=null,manual=false,templateMeta={},assets={}
   }) {
+    await ensureReportBodyFontReady();
     const canvas=document.createElement("canvas");
     canvas.width=1240;canvas.height=1754;
     const ctx=canvas.getContext("2d"),school=state.boot.school||{};
@@ -2733,7 +2785,7 @@
     const weights=subjectWidths.map(lines=>lines>1?1.34:1);
     const availableHeight=tableBottom-(tableTop+headerHeight),weightTotal=weights.reduce((sum,value)=>sum+value,0);
     let rowY=tableTop+headerHeight;
-    const ranks=manual?new Map():reportSubjectRanks(subjects);
+    const ranks=manual?new Map():await reportSubjectPositionMap(report.id);
     displaySubjects.forEach((subject,index)=>{
       const rowHeight=index===displaySubjects.length-1?tableBottom-rowY:availableHeight*(weights[index]/weightTotal);
       const nextY=rowY+rowHeight;
@@ -2743,11 +2795,11 @@
         const breakdown=manual?{classScore:null,examScore:null,total:null}:subjectScoreBreakdown(subject);
         const score=value=>value===null||value===undefined?"":number(value,1);
         drawReportWrappedCell(ctx,subject.subject_name||subject.name||"",columns[0],columns[1],rowY,nextY,{preferredSize:20,minimumSize:13,maxLines:2});
-        drawReportCellText(ctx,score(breakdown.classScore),columns[1],columns[2],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,colour:ink});
-        drawReportCellText(ctx,score(breakdown.examScore),columns[2],columns[3],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,colour:ink});
-        drawReportCellText(ctx,score(breakdown.total),columns[3],columns[4],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:ink});
-        drawReportCellText(ctx,manual?"":subject.grade||"",columns[4],columns[5],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:ink});
-        drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id||subject.subject_name)||"",columns[5],columns[6],(rowY+nextY)/2,{align:"center",preferredSize:18,minimumSize:12,colour:ink});
+        drawReportCellText(ctx,score(breakdown.classScore),columns[1],columns[2],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,colour:REPORT_RESULT_COLOURS.score});
+        drawReportCellText(ctx,score(breakdown.examScore),columns[2],columns[3],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,colour:REPORT_RESULT_COLOURS.score});
+        drawReportCellText(ctx,score(breakdown.total),columns[3],columns[4],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:REPORT_RESULT_COLOURS.total});
+        drawReportCellText(ctx,manual?"":subject.grade||"",columns[4],columns[5],(rowY+nextY)/2,{align:"center",preferredSize:19,minimumSize:13,weight:"bold",colour:REPORT_RESULT_COLOURS.grade});
+        drawReportCellText(ctx,manual?"":ranks.get(subject.subject_id)||"",columns[5],columns[6],(rowY+nextY)/2,{align:"center",preferredSize:18,minimumSize:12,weight:"bold",colour:REPORT_RESULT_COLOURS.position});
         drawReportCellText(ctx,manual?"":subject.remark||"",columns[6],columns[7],(rowY+nextY)/2,{preferredSize:18,minimumSize:11,colour:ink});
       }
       rowY=nextY;
@@ -3520,7 +3572,9 @@
             <label class="field full"><span>Verification base URL</span><input name="verification_base_url" value="${attr(school.verification_base_url||"")}" ${!can("manage_users")?"disabled":""}></label>
             <label class="field"><span>Primary colour</span><input type="color" name="primary_colour" value="${attr(school.primary_colour||"#082d70")}" ${!can("manage_users")?"disabled":""}></label>
             <label class="field"><span>Accent colour</span><input type="color" name="accent_colour" value="${attr(school.accent_colour||"#f0b51d")}" ${!can("manage_users")?"disabled":""}></label>
-            ${can("manage_users")?`<div class="full"><button class="button primary" id="schoolSave" type="button">Save identity</button></div>`:""}
+            <label class="field"><span>Report body font</span><select name="report_body_font" ${!can("manage_users")?"disabled":""}>${reportFontOptionsHtml(school.report_body_font||"Times New Roman")}</select></label>
+            <label class="field"><span>Report body font size</span><input type="number" name="report_body_font_size" min="8" max="16" step="0.5" value="${attr(school.report_body_font_size??11)}" ${!can("manage_users")?"disabled":""}><small>Applied to generated report data and embedded in the downloaded PDF. Default: 11 pt.</small></label>
+            ${can("manage_users")?`<div class="full"><button class="button primary" id="schoolSave" type="button">Save identity and report appearance</button></div>`:""}
           </form>
         </section>
         <div class="grid">
@@ -3563,8 +3617,12 @@
   async function saveSchoolSettings() {
     const form=byId("schoolForm"),values=formObject(form),button=byId("schoolSave");button.disabled=true;
     try{
+      if(!Object.prototype.hasOwnProperty.call(REPORT_FONT_OPTIONS,values.report_body_font))throw new Error("Choose a supported report body font.");
+      const reportFontSize=Number(values.report_body_font_size);
+      if(!Number.isFinite(reportFontSize)||reportFontSize<8||reportFontSize>16)throw new Error("Report body font size must be between 8 and 16 points.");
+      values.report_body_font_size=Math.round(reportFontSize*2)/2;
       await query(state.client.from("school_settings").update(values).eq("id",state.boot.school.id));
-      state.boot=await rpc("get_bootstrap_data");renderBrand();toast("School identity saved");
+      state.boot=await rpc("get_bootstrap_data");renderBrand();toast("School identity and report appearance saved");
     }catch(error){toast("Settings not saved",friendlyError(error),"error")}finally{button.disabled=false}
   }
   async function openMfaManager() {
